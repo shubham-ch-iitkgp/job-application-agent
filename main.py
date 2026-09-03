@@ -55,14 +55,19 @@ def load_profile() -> dict:
 
 
 def pick_resume(profile: dict, text: str) -> str:
-    """Pick the role-appropriate CV from the JD/URL: an FDE role gets the FDE CV,
-    everything else gets the AI CV. Falls back to the default resume_path."""
+    """Upload the resume variant whose keywords best match the posting text
+    (URL + JD). Variants live in profile.yaml under personal.resume_variants,
+    each with a `path` and a `keywords` list. A tie or no match (or no variants
+    declared at all) falls back to personal.resume_path."""
     p = profile["personal"]
     t = text.lower()
-    is_fde = ("forward deployed" in t or "forward-deployed" in t
-              or " fde" in t or "fde " in t or "(fde)" in t)
-    key = "resume_path_fde" if is_fde else "resume_path_ai"
-    return p.get(key) or p.get("resume_path", "")
+    best_path, best_score = "", 0
+    for variant in (p.get("resume_variants") or {}).values():
+        score = sum(1 for kw in (variant.get("keywords") or [])
+                    if str(kw).lower() in t)
+        if score > best_score:
+            best_path, best_score = variant.get("path", ""), score
+    return best_path or p.get("resume_path", "")
 
 
 def job_key(url: str) -> str:
