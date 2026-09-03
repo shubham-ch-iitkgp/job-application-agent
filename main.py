@@ -380,6 +380,11 @@ def apply_deterministic_answers(plan: dict, fields: list[dict], profile: dict) -
             value = personal.get("github")
         elif "website" in blob or "portfolio" in blob:
             value = personal.get("website")
+        elif ("current" in blob and ("ctc" in blob or "salary" in blob or "compensation" in blob)):
+            value = personal.get("current_ctc")
+        elif (("expected" in blob or "desired" in blob)
+              and ("ctc" in blob or "salary" in blob or "compensation" in blob)):
+            value = personal.get("expected_ctc") or personal.get("desired_salary")
 
         if value:
             plan[idx] = {"value": value, "source": "profile"}
