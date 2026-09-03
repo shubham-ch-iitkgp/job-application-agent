@@ -14,6 +14,7 @@ import csv
 import json
 import os
 import sys
+import traceback
 
 import yaml
 from openai import OpenAI
@@ -300,8 +301,44 @@ Return ONLY JSON: {{"<idx>": {{"value": "...", "source": "profile|generated|skip
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
     )
-    plan = json.loads(resp.choices[0].message.content)
+    content = (resp.choices[0].message.content or "").strip()
+    if not content:
+        finish = resp.choices[0].finish_reason
+        raise RuntimeError(
+            f"LLM returned empty content (finish_reason={finish}). "
+            f"Model {LLM_MODEL} may have hit a length/safety limit — try a "
+            f"different LLM_MODEL in .env."
+        )
+    if content.startswith("```"):  # strip accidental markdown fences
+        content = content.strip("`").removeprefix("json").strip()
+    plan = normalize_plan(json.loads(content), fields)
     return apply_deterministic_answers(plan, fields, profile)
+
+
+def normalize_plan(plan, fields: list[dict]) -> dict:
+    """Coerce whatever JSON shape the LLM returned into {"<idx>": {...}}.
+
+    Models sometimes return a list ([{"idx": 0, "value": ...}, ...] or one entry
+    per field positionally) or wrap the map in a single key ({"answers": {...}}).
+    """
+    if isinstance(plan, dict):
+        # unwrap {"answers": {...}} / {"fields": [...]} style wrappers
+        if len(plan) == 1:
+            (only,) = plan.values()
+            if isinstance(only, (list, dict)):
+                plan = only
+    if isinstance(plan, dict):
+        return {str(k): v for k, v in plan.items()}
+    if isinstance(plan, list):
+        out = {}
+        for pos, item in enumerate(plan):
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("idx", item.get("index", item.get("field", pos)))
+            answer = {k: item[k] for k in ("value", "source") if k in item}
+            out[str(idx)] = answer or item
+        return out
+    return {}
 
 
 def field_blob(field: dict) -> str:
@@ -516,7 +553,8 @@ async def main(urls: list[str]):
             try:
                 await apply_to(pw, page, url, profile)
             except Exception as e:
-                print(f"  ! {url} aborted ({type(e).__name__}) — moving to next job")
+                print(f"  ! {url} aborted ({type(e).__name__}: {e}) — moving to next job")
+                traceback.print_exc()
             if not page.is_closed():
                 try:
                     await page.close()
