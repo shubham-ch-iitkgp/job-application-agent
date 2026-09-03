@@ -385,6 +385,17 @@ def apply_deterministic_answers(plan: dict, fields: list[dict], profile: dict) -
         elif (("expected" in blob or "desired" in blob)
               and ("ctc" in blob or "salary" in blob or "compensation" in blob)):
             value = personal.get("expected_ctc") or personal.get("desired_salary")
+        elif "country" in blob:
+            value = personal.get("country")
+        elif ("postal" in blob or "zip" in blob or "pincode" in blob
+              or "pin code" in blob):
+            value = personal.get("postal_code")
+        elif ("state" in blob or "province" in blob) and "united states" not in blob:
+            value = personal.get("state")
+        elif "city" in blob or "town" in blob:
+            value = personal.get("city")
+        elif "street" in blob or "address" in blob:
+            value = personal.get("address_line")
 
         if value:
             plan[idx] = {"value": value, "source": "profile"}
