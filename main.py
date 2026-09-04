@@ -30,7 +30,7 @@ from openai import OpenAI
 from playwright.async_api import async_playwright
 
 from config import load_config
-from runlog import _clip, _NullLog, open_run_log
+from runlog import _clip, _NullLog, open_run_log, RUNS_DIR
 from tailor import (llm_extra_kwargs, make_cover_letter, make_tailored_resume,
                     slug_for)
 
@@ -243,7 +243,35 @@ async def extract_form_fields(page) -> list[dict]:
     """Collect visible form controls with their labels."""
     return await page.evaluate(
         """
-        () => Array.from(document.querySelectorAll(
+        () => {
+        // Framer / Tally / Typeform-style forms render the label as a plain
+        // <div> or <label>-without-for sitting above the input, so el.labels /
+        // aria-* / placeholder are all empty. Walk up a few ancestors and take
+        // the nearest short, control-free text as the label.
+        const labelByProximity = (el) => {
+            let node = el;
+            for (let up = 0; up < 4 && node && node !== document.body; up++) {
+                const holder = node.parentElement;
+                if (!holder) break;
+                for (const lab of holder.querySelectorAll(':scope > label, :scope > * > label')) {
+                    if (!lab.querySelector('input,textarea,select')) {
+                        const t = (lab.innerText || '').trim();
+                        if (t) return t;
+                    }
+                }
+                let sib = node.previousElementSibling;
+                while (sib) {
+                    if (!sib.querySelector('input,textarea,select,button')) {
+                        const t = (sib.innerText || sib.textContent || '').trim();
+                        if (t && t.length <= 100 && /[A-Za-z]/.test(t)) return t;
+                    }
+                    sib = sib.previousElementSibling;
+                }
+                node = holder;
+            }
+            return '';
+        };
+        return Array.from(document.querySelectorAll(
                 'input, textarea, select, [role=combobox], [aria-haspopup=listbox]'))
             .filter(el => {
                 const r = el.getBoundingClientRect();
@@ -259,27 +287,39 @@ async def extract_form_fields(page) -> list[dict]:
                     const ref = document.getElementById(el.getAttribute('aria-labelledby'));
                     if (ref) label = ref.innerText;
                 }
+                if (!label) label = labelByProximity(el);
                 if (!label) {
                     const wrap = el.closest('div,fieldset');
                     const lab = wrap && wrap.querySelector('label');
                     if (lab) label = lab.innerText;
                 }
+                label = (label || '')
+                    .replace(/\\s*\\*\\s*$/, '')
+                    .replace(/\\s*\\(required\\)\\s*$/i, '')
+                    .trim()
+                    .slice(0, 200);
                 const isCombo = el.getAttribute('role') === 'combobox'
                                 || el.getAttribute('aria-haspopup') === 'listbox';
+                // stamp a unique marker so fill_field / field_current_value bind to
+                // THIS element, not page.locator('input').first — id/name/placeholder
+                // are often all empty on Framer/React forms.
+                el.setAttribute('data-agent-fid', String(idx));
                 return {
                     idx,
+                    fid: idx,
                     tag: isCombo && el.tagName !== 'SELECT' ? 'combobox' : el.tagName.toLowerCase(),
                     type: el.type || '',
                     name: el.name || '',
                     id: el.id || '',
                     placeholder: el.placeholder || '',
-                    label: (label || '').trim().slice(0, 200),
+                    label: label,
                     required: el.required || el.getAttribute('aria-required') === 'true' || false,
                     options: el.tagName === 'SELECT'
                         ? Array.from(el.options).map(o => o.text.trim()).slice(0, 50)
                         : null,
                 };
-            })
+            });
+        }
         """
     )
 
@@ -391,6 +431,12 @@ def apply_deterministic_answers(plan: dict, fields: list[dict], profile: dict) -
         blob = field_blob(field)
         idx = str(field["idx"])
         value = None
+        # an open-ended "tell us about a project you built" field can contain the
+        # word "github"/"linkedin" without being a link field — don't force a URL
+        # into it.
+        prose = field.get("tag") == "textarea" or any(
+            w in blob for w in ("project", "proud", "describe",
+                                "tell us", "example", "about"))
 
         if "legal" in blob and "first" in blob and "name" in blob:
             value = personal.get("legal_first_name") or personal.get("first_name")
@@ -413,11 +459,11 @@ def apply_deterministic_answers(plan: dict, fields: list[dict], profile: dict) -
                      if ("without" in blob or "excluding" in blob
                          or "no country code" in blob)
                      else personal.get("phone"))
-        elif "linkedin" in blob:
+        elif "linkedin" in blob and not prose:
             value = personal.get("linkedin")
-        elif "github" in blob:
+        elif "github" in blob and not prose:
             value = personal.get("github")
-        elif "website" in blob or "portfolio" in blob:
+        elif ("website" in blob or "portfolio" in blob) and not prose:
             value = personal.get("website")
         elif ("current" in blob and ("ctc" in blob or "salary" in blob or "compensation" in blob)):
             value = personal.get("current_ctc")
@@ -455,6 +501,11 @@ def _fold(s: str) -> str:
 def field_selector(field: dict) -> str | None:
     """CSS selector for a form control, best identifier first. Shared by
     fill_field and field_current_value."""
+    if field.get("fid") is not None:
+        # marker stamped onto the element by extract_form_fields — always unique,
+        # unlike id/name/placeholder (frequently blank) or a bare tag (matches
+        # every input on the page, so .first reads the wrong field).
+        return f"[data-agent-fid=\"{field['fid']}\"]"
     if field["id"]:
         # attribute form handles IDs that start with digits (Ashby uses UUID ids)
         return f"[id='{field['id']}']"
@@ -560,6 +611,7 @@ def _log_field_outcome(log, page_url, field, ans, outcome, cur=""):
     """One `field_outcome` line: what the field was, what the plan said, and how
     fill_current_page's loop resolved it."""
     log.event("field_outcome", page_url=page_url, idx=field["idx"],
+              fid=field.get("fid"),
               label=field.get("label", ""), tag=field.get("tag", ""),
               type=field.get("type", ""), name=field.get("name", ""),
               id=field.get("id", ""), required=field.get("required", False),
@@ -708,6 +760,8 @@ async def run_auto(pw, page, url: str, profile: dict, cfg: dict):
         "company": company_from_url(url),
         "cfg": {k: cfg[k] for k in ("manual_trigger", "tailor_resume", "force")},
     })
+    if state["log"].path:
+        print(f"  run log    : {state['log'].path}")
     started = time.monotonic()
     try:
         state["jd_text"] = await page.evaluate("() => document.body.innerText")
@@ -739,15 +793,17 @@ async def _stdin_loop(page, capture_jd, fill_now):
             if not line:
                 return  # EOF
             cmd = line.strip().lower()
+            if cmd == "":
+                continue  # bare Enter is a no-op — never auto-fill
             if cmd in ("q", "quit", "done"):
                 print("  ok — close the browser tab to finish and log it.")
                 return
             if cmd == "j":
                 await capture_jd()
-            elif cmd in ("", "f", "fill"):
+            elif cmd in ("f", "fill"):
                 await fill_now()
             else:
-                print("  ? j = capture JD | [enter]/f = fill this page | q = done")
+                print("  ? j = capture JD | f = fill this page | q = done")
     finally:
         try:
             loop.remove_reader(sys.stdin.fileno())
@@ -765,6 +821,8 @@ async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
         "company": company_from_url(url),
         "cfg": {k: cfg[k] for k in ("manual_trigger", "tailor_resume", "force")},
     })
+    if state["log"].path:
+        print(f"  run log    : {state['log'].path}")
     started = time.monotonic()
     lock = asyncio.Lock()
     jd_lock = asyncio.Lock()
@@ -813,7 +871,7 @@ async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
         pass
 
     print("  MANUAL MODE — buttons injected (bottom-right of the page).")
-    print("  terminal:  j = capture JD   |   [enter] or f = fill this page   |   q = done")
+    print("  terminal:  j = capture JD   |   f = fill this page   |   q = done")
     print("  log in / click through yourself; trigger a fill on each page you want filled.")
     print("  close the browser tab when you're finished.")
 
@@ -856,6 +914,7 @@ async def main(urls: list[str], cfg: dict):
         import tailor
         tailor.LLM_REASONING_EFFORT = cfg["llm_reasoning_effort"]
 
+    print(f"  run logs   : {RUNS_DIR}/")
     profile = load_profile()
     if not cfg["force"]:
         applied = load_applied()

@@ -53,6 +53,7 @@ fi
 # 3. one timestamped log per run
 mkdir -p logs
 LOG="logs/run-$(date +%Y%m%d-%H%M%S).log"
+echo "  transcript : $LOG"
 
 if [ -n "$1" ]; then
   # explicit URL(s) and/or flags — forward them as-is
