@@ -43,6 +43,8 @@ BROWSER_PROFILE_DIR = os.path.join(ROOT_DIR, ".browser-profile")
 
 PROFILE_PATH = os.path.join(DATA_DIR, "profile.yaml")
 APPLIED_LOG = os.path.join(DATA_DIR, "applied.csv")
+# applied.csv is headerless; record_applied() only appends data rows.
+APPLIED_FIELDS = ["date", "company", "url", "status"]
 GMAIL_WEB_LOG = os.path.join(DATA_DIR, "gmail_web_job_records.csv")
 GMAIL_API_LOG = os.path.join(DATA_DIR, "gmail_job_records.csv")
 
@@ -167,10 +169,14 @@ def normalize_company_key(company: str) -> str:
 def load_applied() -> set[str]:
     if not os.path.exists(APPLIED_LOG):
         return set()
-    with open(APPLIED_LOG) as f:
-        next(f, None)  # header
-        return {job_key(line.split(",")[2].strip())
-                for line in f if line.count(",") >= 3}
+    keys: set[str] = set()
+    with open(APPLIED_LOG, newline="") as f:
+        for row in csv.DictReader(f, fieldnames=APPLIED_FIELDS):
+            url = (row.get("url") or "").strip()
+            if not url or url.lower() == "url":  # skip blanks / stray header
+                continue
+            keys.add(job_key(url))
+    return keys
 
 
 def load_applied_company_history() -> dict[str, set[str]]:
@@ -178,7 +184,9 @@ def load_applied_company_history() -> dict[str, set[str]]:
     if not os.path.exists(APPLIED_LOG):
         return history
     with open(APPLIED_LOG, newline="") as f:
-        for row in csv.DictReader(f):
+        for row in csv.DictReader(f, fieldnames=APPLIED_FIELDS):
+            if (row.get("url") or "").strip().lower() == "url":  # stray header
+                continue
             company = normalize_company_key(row.get("company", ""))
             status = (row.get("status") or "").strip().lower()
             if company and status:
@@ -239,89 +247,139 @@ def record_applied(url: str, status: str = "reviewed"):
         f.write(f"{datetime.date.today()},{company},{url},{status}\n")
 
 
-async def extract_form_fields(page) -> list[dict]:
-    """Collect visible form controls with their labels."""
-    return await page.evaluate(
-        """
-        () => {
-        // Framer / Tally / Typeform-style forms render the label as a plain
-        // <div> or <label>-without-for sitting above the input, so el.labels /
-        // aria-* / placeholder are all empty. Walk up a few ancestors and take
-        // the nearest short, control-free text as the label.
-        const labelByProximity = (el) => {
-            let node = el;
-            for (let up = 0; up < 4 && node && node !== document.body; up++) {
-                const holder = node.parentElement;
-                if (!holder) break;
-                for (const lab of holder.querySelectorAll(':scope > label, :scope > * > label')) {
-                    if (!lab.querySelector('input,textarea,select')) {
-                        const t = (lab.innerText || '').trim();
-                        if (t) return t;
-                    }
-                }
-                let sib = node.previousElementSibling;
-                while (sib) {
-                    if (!sib.querySelector('input,textarea,select,button')) {
-                        const t = (sib.innerText || sib.textContent || '').trim();
-                        if (t && t.length <= 100 && /[A-Za-z]/.test(t)) return t;
-                    }
-                    sib = sib.previousElementSibling;
-                }
-                node = holder;
+# Runs inside a single frame's document. Pulled out as a constant so
+# extract_form_fields can run it against every frame on the page.
+_FIELD_SCAN_JS = r"""
+() => {
+// Framer / Tally / Typeform-style forms render the label as a plain
+// <div> or <label>-without-for sitting above the input, so el.labels /
+// aria-* / placeholder are all empty. Walk up a few ancestors and take
+// the nearest short, control-free text as the label.
+const labelByProximity = (el) => {
+    let node = el;
+    for (let up = 0; up < 4 && node && node !== document.body; up++) {
+        const holder = node.parentElement;
+        if (!holder) break;
+        for (const lab of holder.querySelectorAll(':scope > label, :scope > * > label')) {
+            if (!lab.querySelector('input,textarea,select')) {
+                const t = (lab.innerText || '').trim();
+                if (t) return t;
             }
-            return '';
-        };
-        return Array.from(document.querySelectorAll(
-                'input, textarea, select, [role=combobox], [aria-haspopup=listbox]'))
-            .filter(el => {
-                const r = el.getBoundingClientRect();
-                if (el.type === 'hidden' || r.width <= 0 || r.height <= 0) return false;
-                return true;
-            })
-            .map((el, idx) => {
-                let label = '';
-                if (el.labels && el.labels.length) label = el.labels[0].innerText;
-                if (!label && el.getAttribute('aria-label')) label = el.getAttribute('aria-label');
-                if (!label && el.placeholder) label = el.placeholder;
-                if (!label && el.getAttribute('aria-labelledby')) {
-                    const ref = document.getElementById(el.getAttribute('aria-labelledby'));
-                    if (ref) label = ref.innerText;
-                }
-                if (!label) label = labelByProximity(el);
-                if (!label) {
-                    const wrap = el.closest('div,fieldset');
-                    const lab = wrap && wrap.querySelector('label');
-                    if (lab) label = lab.innerText;
-                }
-                label = (label || '')
-                    .replace(/\\s*\\*\\s*$/, '')
-                    .replace(/\\s*\\(required\\)\\s*$/i, '')
-                    .trim()
-                    .slice(0, 200);
-                const isCombo = el.getAttribute('role') === 'combobox'
-                                || el.getAttribute('aria-haspopup') === 'listbox';
-                // stamp a unique marker so fill_field / field_current_value bind to
-                // THIS element, not page.locator('input').first — id/name/placeholder
-                // are often all empty on Framer/React forms.
-                el.setAttribute('data-agent-fid', String(idx));
-                return {
-                    idx,
-                    fid: idx,
-                    tag: isCombo && el.tagName !== 'SELECT' ? 'combobox' : el.tagName.toLowerCase(),
-                    type: el.type || '',
-                    name: el.name || '',
-                    id: el.id || '',
-                    placeholder: el.placeholder || '',
-                    label: label,
-                    required: el.required || el.getAttribute('aria-required') === 'true' || false,
-                    options: el.tagName === 'SELECT'
-                        ? Array.from(el.options).map(o => o.text.trim()).slice(0, 50)
-                        : null,
-                };
-            });
         }
-        """
-    )
+        let sib = node.previousElementSibling;
+        while (sib) {
+            if (!sib.querySelector('input,textarea,select,button')) {
+                const t = (sib.innerText || sib.textContent || '').trim();
+                if (t && t.length <= 100 && /[A-Za-z]/.test(t)) return t;
+            }
+            sib = sib.previousElementSibling;
+        }
+        node = holder;
+    }
+    return '';
+};
+// Web-component ATSes (some Workday/SmartRecruiters widgets) hide the real
+// controls in open shadow roots, where a plain querySelectorAll can't see them.
+const SEL = 'input, textarea, select, [role=combobox], [aria-haspopup=listbox]';
+const deep = (root, out) => {
+    for (const el of root.querySelectorAll(SEL)) out.push(el);
+    for (const el of root.querySelectorAll('*'))
+        if (el.shadowRoot) deep(el.shadowRoot, out);
+    return out;
+};
+return deep(document, [])
+    .filter(el => {
+        const r = el.getBoundingClientRect();
+        if (el.type === 'hidden' || r.width <= 0 || r.height <= 0) return false;
+        return true;
+    })
+    .map((el, idx) => {
+        let label = '';
+        if (el.labels && el.labels.length) label = el.labels[0].innerText;
+        if (!label && el.getAttribute('aria-label')) label = el.getAttribute('aria-label');
+        if (!label && el.placeholder) label = el.placeholder;
+        if (!label && el.getAttribute('aria-labelledby')) {
+            const ref = document.getElementById(el.getAttribute('aria-labelledby'));
+            if (ref) label = ref.innerText;
+        }
+        if (!label) label = labelByProximity(el);
+        if (!label) {
+            const wrap = el.closest('div,fieldset');
+            const lab = wrap && wrap.querySelector('label');
+            if (lab) label = lab.innerText;
+        }
+        label = (label || '')
+            .replace(/\s*\*\s*$/, '')
+            .replace(/\s*\(required\)\s*$/i, '')
+            .trim()
+            .slice(0, 200);
+        const isCombo = el.getAttribute('role') === 'combobox'
+                        || el.getAttribute('aria-haspopup') === 'listbox';
+        // stamp a unique marker so fill_field / field_current_value bind to
+        // THIS element, not page.locator('input').first — id/name/placeholder
+        // are often all empty on Framer/React forms.
+        el.setAttribute('data-agent-fid', String(idx));
+        return {
+            idx,
+            fid: idx,
+            tag: isCombo && el.tagName !== 'SELECT' ? 'combobox' : el.tagName.toLowerCase(),
+            type: el.type || '',
+            name: el.name || '',
+            id: el.id || '',
+            placeholder: el.placeholder || '',
+            label: label,
+            required: el.required || el.getAttribute('aria-required') === 'true' || false,
+            options: el.tagName === 'SELECT'
+                ? Array.from(el.options).map(o => o.text.trim()).slice(0, 50)
+                : null,
+        };
+    });
+}
+"""
+
+
+async def extract_form_fields(page):
+    """Collect visible form controls with their labels, across every frame.
+
+    Handshake/Ashby and some Greenhouse embeds render the application form in a
+    (cross-origin) <iframe>, so a main-frame-only scan sees nothing. Runs the
+    scan in each frame and returns (fields, target): the Page or Frame holding
+    the most controls, so fill_field / field_current_value bind their
+    [data-agent-fid] selectors in the right context. Falls back to the main
+    frame when nothing is found anywhere."""
+    best_fields, best_target = [], page.main_frame
+    for frame in page.frames:                       # page.frames includes main_frame
+        try:
+            found = await frame.evaluate(_FIELD_SCAN_JS)
+        except Exception:
+            continue                                # detached / cross-origin-locked frame
+        if len(found) > len(best_fields):
+            best_fields, best_target = found, frame
+    return best_fields, best_target
+
+
+async def page_main_text(page) -> tuple[str, str]:
+    """innerText of the frame that actually holds the posting, plus that frame's
+    URL. Most sites: the main frame. Ashby / Greenhouse embeds (Handshake, some
+    university boards) put the whole posting in an <iframe>, leaving the top
+    document a ~500-char shell — fall back to the largest child frame then.
+    Always returns a (str, str) pair."""
+    async def _txt(frame):
+        try:
+            return (await frame.evaluate("() => document.body.innerText") or "").strip()
+        except Exception:
+            return ""
+
+    best, best_url = await _txt(page.main_frame), page.url
+    if len(best) >= 800:
+        return best, best_url
+    for frame in page.frames:
+        if frame is page.main_frame:
+            continue
+        t = await _txt(frame)
+        if len(t) > len(best):
+            best, best_url = t, frame.url
+    return best, best_url
 
 
 def plan_answers(fields: list[dict], profile: dict, job_url: str,
@@ -470,16 +528,20 @@ def apply_deterministic_answers(plan: dict, fields: list[dict], profile: dict) -
         elif (("expected" in blob or "desired" in blob)
               and ("ctc" in blob or "salary" in blob or "compensation" in blob)):
             value = personal.get("expected_ctc") or personal.get("desired_salary")
-        elif "country" in blob:
+        # Address/location: gate on `not prose` and match whole words only, so a
+        # "Personal statement" / "Describe your capacity" textarea never gets
+        # "Karnataka" / "Bengaluru" jammed into it ("state" in "statement" etc).
+        elif not prose and re.search(r"\bcountry\b", blob):
             value = personal.get("country")
-        elif ("postal" in blob or "zip" in blob or "pincode" in blob
-              or "pin code" in blob):
+        elif not prose and ("postal" in blob or "zip" in blob or "pincode" in blob
+                            or "pin code" in blob):
             value = personal.get("postal_code")
-        elif ("state" in blob or "province" in blob) and "united states" not in blob:
+        elif (not prose and re.search(r"\b(state|province)\b", blob)
+              and "united states" not in blob):
             value = personal.get("state")
-        elif "city" in blob or "town" in blob:
+        elif not prose and re.search(r"\b(city|town)\b", blob):
             value = personal.get("city")
-        elif "street" in blob or "address" in blob:
+        elif not prose and re.search(r"\b(street|address)\b", blob):
             value = personal.get("address_line")
 
         if value:
@@ -527,7 +589,8 @@ async def field_current_value(page, field: dict) -> str:
     """The control's current user-meaningful value as text ('' if empty), so a
     re-trigger on the same page can leave a filled field (and anything the user
     typed) untouched — or, for dropdowns we own deterministically, replace a
-    stale / mangled value with the clean one."""
+    stale / mangled value with the clean one. `page` may be a Page or a Frame
+    (iframe-hosted forms); both expose .locator."""
     selector = field_selector(field)
     if not selector:
         return ""
@@ -554,6 +617,9 @@ async def field_current_value(page, field: dict) -> str:
 
 async def fill_field(page, field: dict, value: str, resume_path: str,
                      cover_path: str = ""):
+    # `page` may be a Page or a Frame (iframe-hosted forms) — both expose
+    # .locator / .wait_for_timeout, but keyboard lives on the owning Page.
+    kb = getattr(page, "page", page).keyboard
     selector = field_selector(field)
     if not selector:
         return False
@@ -571,13 +637,13 @@ async def fill_field(page, field: dict, value: str, resume_path: str,
             # clear any stale/pre-filled text so a re-select doesn't append to or
             # fuzzy-match against the old value
             try:
-                await page.keyboard.press("ControlOrMeta+A")
-                await page.keyboard.press("Delete")
+                await kb.press("ControlOrMeta+A")
+                await kb.press("Delete")
             except Exception:
                 pass
             await loc.type(value, delay=30)
             await page.wait_for_timeout(800)
-            await page.keyboard.press("Enter")
+            await kb.press("Enter")
         elif field["tag"] == "select":
             await loc.select_option(label=value)
         elif field["type"] in ("checkbox", "radio"):
@@ -626,9 +692,10 @@ async def fill_current_page(pw, page, profile: dict, url: str, state: dict, cfg:
     repeatedly for a multi-page form: already-filled fields are left alone, and
     the tailored resume / cover letter are built once and cached on `state`."""
     log = state.get("log") or _NULL_LOG
-    fields = await extract_form_fields(page)
+    fields, target = await extract_form_fields(page)
     if not fields:
         print("  no form fields on this page")
+        print(f"    frames on page: {[fr.url for fr in page.frames]}")
         log.event("page_fill", page_url=page.url, field_count=0,
                   counts={"filled": 0, "skipped": 0, "already": 0})
         return
@@ -636,7 +703,7 @@ async def fill_current_page(pw, page, profile: dict, url: str, state: dict, cfg:
     print(f"  {len(fields)} fields found; planning answers with {LLM_MODEL}...")
     plan = plan_answers(fields, profile, page.url, log)
 
-    page_text = await page.evaluate("() => document.body.innerText")
+    page_text, _ = await page_main_text(page)
     jd_text = state.get("jd_text")
 
     if cfg["tailor_resume"] and jd_text and not state["tailored_done"]:
@@ -644,10 +711,10 @@ async def fill_current_page(pw, page, profile: dict, url: str, state: dict, cfg:
         try:
             print("  tailoring resume to the captured JD...")
             state["tailored_resume"] = await make_tailored_resume(
-                pw, get_llm(), LLM_MODEL, jd_text, url)
+                pw, get_llm(), LLM_MODEL, jd_text, url, profile, company_from_url(url))
             print(f"  tailored resume: {state['tailored_resume']}")
         except Exception as e:
-            print(f"  ! tailoring failed ({type(e).__name__}: {e}) — using role CV")
+            print(f"  ! tailoring skipped ({type(e).__name__}: {e}) — uploading role CV instead")
 
     resume = state["tailored_resume"] or pick_resume(
         profile, f"{url}\n{jd_text or page_text}")
@@ -659,7 +726,7 @@ async def fill_current_page(pw, page, profile: dict, url: str, state: dict, cfg:
             try:
                 print("  writing cover letter with work examples...")
                 state["cover_path"] = await make_cover_letter(
-                    pw, get_llm(), LLM_MODEL, jd_text, url, profile)
+                    pw, get_llm(), LLM_MODEL, jd_text, url, profile, company_from_url(url))
                 print(f"  cover letter: {state['cover_path']}")
             except Exception as e:
                 print(f"  ! cover letter failed ({type(e).__name__}: {e}) — skipping it")
@@ -684,7 +751,7 @@ async def fill_current_page(pw, page, profile: dict, url: str, state: dict, cfg:
             skipped += 1
             continue
         val = str(val)
-        cur = await field_current_value(page, f)
+        cur = await field_current_value(target, f)
         if cur:
             # first text line only — a combobox's inner_text can trail a "remove" glyph
             head = cur.strip().splitlines()[0].strip()
@@ -703,7 +770,7 @@ async def fill_current_page(pw, page, profile: dict, url: str, state: dict, cfg:
                 already += 1
                 continue
             print(f"  re-selecting {label} (value was mangled): {cur!r} -> {val!r}")
-        ok = await fill_field(page, f, val, resume, state["cover_path"] or "")
+        ok = await fill_field(target, f, val, resume, state["cover_path"] or "")
         filled += ok
         _log_field_outcome(log, page.url, f, ans,
                            "filled" if ok else "fill_failed", cur)
@@ -716,7 +783,7 @@ async def fill_current_page(pw, page, profile: dict, url: str, state: dict, cfg:
 async def run_auto(pw, page, url: str, profile: dict, cfg: dict):
     """Original behavior: click through any Apply button, fill once, then wait
     for the user to review and close the tab."""
-    fields = await extract_form_fields(page)
+    fields, _ = await extract_form_fields(page)
     if not fields or len(fields) < 3:
         # Posting pages usually hide the form behind an Apply button — click through.
         print("  no form yet — looking for an Apply button...")
@@ -741,7 +808,7 @@ async def run_auto(pw, page, url: str, profile: dict, cfg: dict):
         except Exception:
             pass
         await page.wait_for_timeout(2000)
-        fields = await extract_form_fields(page)
+        fields, _ = await extract_form_fields(page)
         if not fields:
             print("  still no form found — for a login-gated or multi-page flow,"
                   " re-run with --manual and drive it yourself. Leaving the page"
@@ -764,7 +831,7 @@ async def run_auto(pw, page, url: str, profile: dict, cfg: dict):
         print(f"  run log    : {state['log'].path}")
     started = time.monotonic()
     try:
-        state["jd_text"] = await page.evaluate("() => document.body.innerText")
+        state["jd_text"], _ = await page_main_text(page)
         await fill_current_page(pw, page, profile, url, state, cfg)
         print("  >>> REVIEW the form in the browser window, then click Submit yourself.")
         print("  >>> When you're done, CLOSE THE BROWSER TAB to move on.")
@@ -832,11 +899,11 @@ async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
             print("  (JD capture already running — ignored)")
             return
         async with jd_lock:
-            text = await page.evaluate("() => document.body.innerText")
+            text, src = await page_main_text(page)
             if text == state["jd_text"]:
                 print(f"  JD unchanged ({len(text)} chars) — already captured, skipping")
                 state["log"].event("jd_capture", page_url=page.url, chars=len(text),
-                                   unchanged=True, replaced=False)
+                                   source_frame=src, unchanged=True, replaced=False)
                 return
             replaced = bool(state["jd_text"])
             if replaced:
@@ -846,9 +913,11 @@ async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
             path = os.path.join(OUTPUT_DIR, f"jd_{slug_for(page.url)}.txt")
             with open(path, "w") as f:
                 f.write(text)
-            print(f"  captured JD ({len(text)} chars) -> {path}")
+            frm = "" if src == page.url else f" from {src}"
+            print(f"  captured JD ({len(text)} chars{frm}) -> {path}")
             state["log"].event("jd_capture", page_url=page.url, chars=len(text),
-                               path=path, unchanged=False, replaced=replaced)
+                               source_frame=src, path=path, unchanged=False,
+                               replaced=replaced)
 
     async def fill_now():
         if lock.locked():

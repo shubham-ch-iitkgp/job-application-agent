@@ -25,13 +25,29 @@ ROOT_DIR = os.path.dirname(__file__)
 RESUME_DIR = os.path.join(ROOT_DIR, "resumes")
 OUTPUT_DIR = os.path.join(ROOT_DIR, "outputs")
 
-MASTER_PATH = os.path.join(RESUME_DIR, "resume_master_fde.md")
+MASTER_PATH = os.path.join(RESUME_DIR, "resume_master.md")
 COVER_MASTER_PATH = os.path.join(RESUME_DIR, "cover_letter_master.md")
+# Optional: drop a plain-text file here to override the built-in TAILOR_PROMPT.
+# Must contain the {master} and {jd} placeholders.
+TAILOR_PROMPT_PATH = os.path.join(RESUME_DIR, "tailor_prompt.txt")
 OUT_DIR = os.path.join(OUTPUT_DIR, "tailored_resumes")
+
+
+def applicant_slug(profile: dict) -> str:
+    """`First_Last` from profile.personal, safe for a filename. The generated
+    resume / cover-letter PDF a recruiter downloads is named with this."""
+    p = profile.get("personal", {})
+    name = f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+    return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_") or "Applicant"
+
+
+def company_slug(company: str) -> str:
+    """Short filename-safe company tag, '' when unknown (caller omits it)."""
+    return re.sub(r"[^A-Za-z0-9]+", "-", (company or "").lower()).strip("-")
 
 TAILOR_PROMPT = """You tailor a resume to a job description. Output ONLY the tailored
 resume as Markdown with the exact same structural conventions as the master
-(# name, contact line, ## sections, ### roles, - bullets, **bold**).
+(# name, one-line tagline, contact line, ## SECTION, ### role, - bullet, **bold**).
 
 HARD RULES — violating any of these makes the output unusable:
 - Never invent or alter employers, job titles, dates, degrees, projects, numbers,
@@ -40,17 +56,16 @@ HARD RULES — violating any of these makes the output unusable:
 - Do not mention citizenship, visas, or work authorization anywhere.
 - Keep every employer and role present (you may shorten bullets of older roles).
 - Keep it to roughly the same length or shorter — recruiters skim.
+- Preserve the candidate's actual positioning, domain, and seniority exactly as
+  written in the master. Never invent a new persona or shift their field.
 
 WHAT TO DO:
-- Rewrite the PROFESSIONAL SUMMARY to mirror the job's language and priorities.
-- Preserve the core positioning: Kevin is a senior software / implementation
-  engineer who deploys AI into customer systems, not a narrow AI-only specialist.
-- For FDE, solutions, applied AI, customer engineer, implementation, deployment,
-  or agent workflow roles, keep customer-facing delivery, enterprise integration,
-  stakeholder communication, and production ownership visible in the top third.
-- Reorder skills groups and bullets so the most JD-relevant come first.
+- Rewrite the tagline and PROFESSIONAL SUMMARY to mirror the job's language and
+  priorities, using only facts and framing already present in the master.
+- Move the experience, skills, and bullets most relevant to the JD into the top
+  third; reorder skill groups the same way.
 - Reword bullets to use the JD's terminology where it is truthfully equivalent
-  (e.g. "agent orchestration" vs "tool-calling workflows").
+  (e.g. "CI/CD pipelines" vs "delivery automation").
 - Emphasize (bold) the few phrases that match the JD's core requirements.
 
 MASTER RESUME:
@@ -69,9 +84,9 @@ HARD RULES:
 - Every fact, number, and link must come from the PROFILE or WORK EXAMPLES below.
   Never invent experience, results, or URLs.
 - Cite 1-2 work examples WITH their links, chosen for relevance to this JD.
-  If the company's own product appears in a work example's stack (e.g. Deepgram,
-  Cartesia, Twilio, LiveKit/Daily/Pipecat, ElevenLabs, Vapi, OpenAI), lead with
-  that example: "I built a production agent on your product" is the whole pitch.
+  If any work example's tech stack includes a product the hiring company itself
+  builds or sells, lead with that example: "I built this on your product" is the
+  whole pitch.
 - Do not mention citizenship, visas, or work authorization.
 - 3 short paragraphs maximum. Recruiters skim.
 - Follow cover_letter_style if provided in the profile. Keep the same practical,
@@ -107,8 +122,27 @@ CSS = """
 
 
 def load_master() -> str:
+    if not os.path.exists(MASTER_PATH):
+        raise FileNotFoundError(
+            f"resume tailoring is on but {MASTER_PATH} is missing. Add your master "
+            f"resume there as Markdown (# name, tagline line, contact line, "
+            f"## SECTION, ### role, - bullet), or set `tailor_resume: false` in "
+            f"local.yaml to upload a static CV instead."
+        )
     with open(MASTER_PATH) as f:
         return f.read()
+
+
+def load_tailor_prompt() -> str:
+    """The built-in TAILOR_PROMPT, unless resumes/tailor_prompt.txt overrides it.
+    An override missing the {master}/{jd} placeholders is ignored with a warning."""
+    if os.path.exists(TAILOR_PROMPT_PATH):
+        with open(TAILOR_PROMPT_PATH) as f:
+            custom = f.read()
+        if "{master}" in custom and "{jd}" in custom:
+            return custom
+        print(f"  ! {TAILOR_PROMPT_PATH} lacks {{master}}/{{jd}} — using built-in prompt")
+    return TAILOR_PROMPT
 
 
 def load_cover_master() -> str:
@@ -123,7 +157,7 @@ def tailor_markdown(llm, model: str, jd_text: str) -> str:
         model=model,
         messages=[{
             "role": "user",
-            "content": TAILOR_PROMPT.format(master=load_master(), jd=jd_text[:12000]),
+            "content": load_tailor_prompt().format(master=load_master(), jd=jd_text[:12000]),
         }],
         **llm_extra_kwargs(),
     )
@@ -190,10 +224,19 @@ def slug_for(url: str) -> str:
     return re.sub(r"[^a-zA-Z0-9]+", "-", s).strip("-")[:80]
 
 
-async def make_tailored_resume(pw, llm, model: str, jd_text: str, job_url: str) -> str:
+def _doc_path(profile: dict, company: str, kind: str) -> str:
+    """`<First_Last>_<kind>[_<company>].pdf` under OUT_DIR — the name a recruiter
+    sees on the portal. `kind` is 'Resume' or 'Cover_Letter'."""
+    cs = company_slug(company)
+    tail = f"_{cs}" if cs else ""
+    return os.path.join(OUT_DIR, f"{applicant_slug(profile)}_{kind}{tail}.pdf")
+
+
+async def make_tailored_resume(pw, llm, model: str, jd_text: str, job_url: str,
+                               profile: dict, company: str = "") -> str:
     """Returns the path of the tailored PDF for this job."""
     os.makedirs(OUT_DIR, exist_ok=True)
-    out_path = os.path.join(OUT_DIR, f"KevinKakolla_{slug_for(job_url)}.pdf")
+    out_path = _doc_path(profile, company, "Resume")
     md = tailor_markdown(llm, model, jd_text)
     with open(out_path.replace(".pdf", ".md"), "w") as f:
         f.write(md)  # kept beside the PDF so you can audit what was sent
@@ -202,11 +245,11 @@ async def make_tailored_resume(pw, llm, model: str, jd_text: str, job_url: str) 
 
 
 async def make_cover_letter(pw, llm, model: str, jd_text: str, job_url: str,
-                            profile: dict) -> str:
+                            profile: dict, company: str = "") -> str:
     """Returns the path of a tailored cover-letter PDF citing real work examples."""
     import yaml
     os.makedirs(OUT_DIR, exist_ok=True)
-    out_path = os.path.join(OUT_DIR, f"KevinKakolla_cover_{slug_for(job_url)}.pdf")
+    out_path = _doc_path(profile, company, "Cover_Letter")
     resp = llm.chat.completions.create(
         model=model,
         messages=[{
