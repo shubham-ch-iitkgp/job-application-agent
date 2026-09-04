@@ -3,16 +3,23 @@
 Usage:
     python main.py <job_url> [<job_url> ...]
     python main.py --queue jobs.txt        # one URL per line
+    python main.py --manual <job_url>      # don't auto-fill; drive it yourself with
+                                           # the in-page buttons / terminal (j, enter, q)
 
 For each URL it opens a page in a dedicated Chromium window, extracts the form,
 fills what it can from profile.yaml (LLM drafts the open-ended answers), then
 PAUSES so you review and click Submit yourself. It never submits on its own.
+
+In --manual mode (also settable via local.yaml when APP_ENV=local) nothing is
+filled until you trigger it — use it for multi-page forms (Workday) and flows
+behind a login: navigate / log in yourself, then trigger a fill on each page.
 """
 
 import asyncio
 import csv
 import json
 import os
+import re
 import sys
 import traceback
 
@@ -20,10 +27,13 @@ import yaml
 from openai import OpenAI
 from playwright.async_api import async_playwright
 
-from tailor import llm_extra_kwargs, make_cover_letter, make_tailored_resume
+from config import load_config
+from tailor import (llm_extra_kwargs, make_cover_letter, make_tailored_resume,
+                    slug_for)
 
 ROOT_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(ROOT_DIR, "data")
+OUTPUT_DIR = os.path.join(ROOT_DIR, "outputs")
 BROWSER_PROFILE_DIR = os.path.join(ROOT_DIR, ".browser-profile")
 
 PROFILE_PATH = os.path.join(DATA_DIR, "profile.yaml")
@@ -46,8 +56,10 @@ def get_llm() -> OpenAI:
             api_key=os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY"),
         )
     return _llm
-NO_TAILOR = False  # set by --no-tailor: upload the master resume as-is
-FORCE = False  # set by --force: revisit URLs even if they are in applied.csv
+
+
+# Login/register wall heuristic for cfg["manual_on_login_detected"].
+LOGIN_URL_RE = re.compile(r"(login|sign[-_]?in|/auth/|/register|/account/)", re.I)
 
 
 def load_profile() -> dict:
@@ -413,23 +425,56 @@ def apply_deterministic_answers(plan: dict, fields: list[dict], profile: dict) -
     return plan
 
 
-async def fill_field(page, field: dict, value: str, resume_path: str,
-                     cover_path: str = ""):
-    selector = None
+def field_selector(field: dict) -> str | None:
+    """CSS selector for a form control, best identifier first. Shared by
+    fill_field and field_has_value."""
     if field["id"]:
         # attribute form handles IDs that start with digits (Ashby uses UUID ids)
-        selector = f"[id='{field['id']}']"
-    elif field["name"]:
-        selector = f"{field['tag']}[name=\"{field['name']}\"]"
-    elif field.get("placeholder"):
+        return f"[id='{field['id']}']"
+    if field["name"]:
+        return f"{field['tag']}[name=\"{field['name']}\"]"
+    if field.get("placeholder"):
         # workatastartup (and other React modals): the message textarea has no
         # id/name — only a placeholder. Target that.
         ph = field["placeholder"].replace('"', '\\"')
         tag = field["tag"] if field["tag"] in ("input", "textarea", "select") else "textarea"
-        selector = f"{tag}[placeholder=\"{ph}\"]"
-    elif field["tag"] in ("textarea", "input"):
+        return f"{tag}[placeholder=\"{ph}\"]"
+    if field["tag"] in ("textarea", "input"):
         # last resort: the lone textarea/input on the page (use .first below)
-        selector = field["tag"]
+        return field["tag"]
+    return None
+
+
+async def field_has_value(page, field: dict) -> bool:
+    """True if the control already holds a user-meaningful value, so a re-trigger
+    on the same page leaves it (and anything the user typed) untouched."""
+    selector = field_selector(field)
+    if not selector:
+        return False
+    loc = page.locator(selector).first
+    try:
+        tag, ftype = field["tag"], field.get("type", "")
+        if ftype == "file":
+            return False  # can't read a file input back — allow the (re)upload
+        if ftype in ("checkbox", "radio"):
+            return await loc.is_checked()
+        if tag in ("input", "textarea"):
+            return bool((await loc.input_value()).strip())
+        if tag == "select":
+            val = (await loc.evaluate(
+                "el => (el.options[el.selectedIndex] || {}).text || ''")).strip()
+            opts = field.get("options") or []
+            return bool(val) and (not opts or val != opts[0])
+        if tag == "combobox":
+            return bool((await loc.inner_text()).strip())
+    except Exception:
+        return False
+    return False
+
+
+async def fill_field(page, field: dict, value: str, resume_path: str,
+                     cover_path: str = ""):
+    selector = field_selector(field)
     if not selector:
         return False
     loc = page.locator(selector).first  # .first = tolerant of multi-match fallbacks
@@ -459,11 +504,83 @@ async def fill_field(page, field: dict, value: str, resume_path: str,
         return False
 
 
-async def apply_to(pw, page, url: str, profile: dict):
-    print(f"\n=== {url}")
-    await page.goto(url, wait_until="domcontentloaded")
-    await page.wait_for_timeout(2000)
+async def looks_like_login(page) -> bool:
+    """Heuristic for cfg["manual_on_login_detected"]: a login/register wall in
+    front of the form."""
+    if LOGIN_URL_RE.search(page.url or ""):
+        return True
+    try:
+        return await page.locator("input[type=password]").count() > 0
+    except Exception:
+        return False
 
+
+def _new_state() -> dict:
+    return {"jd_text": None, "tailored_resume": None, "cover_path": None,
+            "tailored_done": False}
+
+
+async def fill_current_page(pw, page, profile: dict, url: str, state: dict, cfg: dict):
+    """Extract → plan → fill whatever page is on screen right now. Safe to call
+    repeatedly for a multi-page form: already-filled fields are left alone, and
+    the tailored resume / cover letter are built once and cached on `state`."""
+    fields = await extract_form_fields(page)
+    if not fields:
+        print("  no form fields on this page")
+        return
+
+    print(f"  {len(fields)} fields found; planning answers with {LLM_MODEL}...")
+    plan = plan_answers(fields, profile, page.url)
+
+    page_text = await page.evaluate("() => document.body.innerText")
+    jd_text = state.get("jd_text")
+
+    if cfg["tailor_resume"] and jd_text and not state["tailored_done"]:
+        state["tailored_done"] = True
+        try:
+            print("  tailoring resume to the captured JD...")
+            state["tailored_resume"] = await make_tailored_resume(
+                pw, get_llm(), LLM_MODEL, jd_text, url)
+            print(f"  tailored resume: {state['tailored_resume']}")
+        except Exception as e:
+            print(f"  ! tailoring failed ({type(e).__name__}: {e}) — using role CV")
+
+    resume = state["tailored_resume"] or pick_resume(
+        profile, f"{url}\n{jd_text or page_text}")
+    print(f"  resume: {resume}")
+
+    if (not state["cover_path"]
+            and any(a.get("value") == "UPLOAD_COVER_LETTER" for a in plan.values())):
+        if jd_text:
+            try:
+                print("  writing cover letter with work examples...")
+                state["cover_path"] = await make_cover_letter(
+                    pw, get_llm(), LLM_MODEL, jd_text, url, profile)
+                print(f"  cover letter: {state['cover_path']}")
+            except Exception as e:
+                print(f"  ! cover letter failed ({type(e).__name__}: {e}) — skipping it")
+        else:
+            print("  ! cover-letter upload wanted but no JD captured — hit "
+                  "'Capture job description' first; skipping it for now")
+
+    filled = skipped = already = 0
+    for f in fields:
+        ans = plan.get(str(f["idx"]))
+        if not ans or ans.get("source") == "skip" or not ans.get("value"):
+            skipped += 1
+            continue
+        if await field_has_value(page, f):
+            print(f"  already filled, skipping: {(f['label'] or f['name'])[:60]}")
+            already += 1
+            continue
+        filled += await fill_field(page, f, ans["value"], resume,
+                                   state["cover_path"] or "")
+    print(f"  filled {filled}, skipped {skipped}, already-filled {already}")
+
+
+async def run_auto(pw, page, url: str, profile: dict, cfg: dict):
+    """Original behavior: click through any Apply button, fill once, then wait
+    for the user to review and close the tab."""
     fields = await extract_form_fields(page)
     if not fields or len(fields) < 3:
         # Posting pages usually hide the form behind an Apply button — click through.
@@ -491,49 +608,20 @@ async def apply_to(pw, page, url: str, profile: dict):
         await page.wait_for_timeout(2000)
         fields = await extract_form_fields(page)
         if not fields:
-            print("  still no form found — if this is a YC/workatastartup role, make"
-                  " sure you're logged in first (run: python login.py). Leaving the page"
-                  " open so you can navigate to the form manually; close the tab to continue")
+            print("  still no form found — for a login-gated or multi-page flow,"
+                  " re-run with --manual and drive it yourself. Leaving the page"
+                  " open; close the tab to continue")
             try:
                 await page.wait_for_event("close", timeout=0)
             except Exception:
                 pass
             return
 
-    print(f"  {len(fields)} fields found; planning answers with {LLM_MODEL}...")
-    plan = plan_answers(fields, profile, url)
-
-    jd_text = await page.evaluate("() => document.body.innerText")
-    resume = pick_resume(profile, f"{url}\n{jd_text}")
-    print(f"  role CV: {resume}")
-    if not NO_TAILOR:
-        try:
-            print("  tailoring resume to this JD...")
-            resume = await make_tailored_resume(pw, get_llm(), LLM_MODEL, jd_text, url)
-            print(f"  tailored resume: {resume}")
-        except Exception as e:
-            print(f"  ! tailoring failed ({type(e).__name__}: {e}) — using role CV {resume}")
-
-    cover = ""
-    if any(a.get("value") == "UPLOAD_COVER_LETTER" for a in plan.values()):
-        try:
-            print("  writing cover letter with work examples...")
-            jd_text = await page.evaluate("() => document.body.innerText")
-            cover = await make_cover_letter(pw, get_llm(), LLM_MODEL, jd_text,
-                                            url, profile)
-            print(f"  cover letter: {cover}")
-        except Exception as e:
-            print(f"  ! cover letter failed ({type(e).__name__}: {e}) — skipping it")
-
-    filled = skipped = 0
-    for f in fields:
-        ans = plan.get(str(f["idx"]))
-        if not ans or ans["source"] == "skip" or not ans.get("value"):
-            skipped += 1
-            continue
-        ok = await fill_field(page, f, ans["value"], resume, cover)
-        filled += ok
-    print(f"  filled {filled}, skipped {skipped}")
+    # auto mode: the landing page *is* the JD page, so seed it for tailoring
+    # (manual mode leaves this None until the user hits "Capture job description")
+    state = _new_state()
+    state["jd_text"] = await page.evaluate("() => document.body.innerText")
+    await fill_current_page(pw, page, profile, url, state, cfg)
     print("  >>> REVIEW the form in the browser window, then click Submit yourself.")
     print("  >>> When you're done, CLOSE THE BROWSER TAB to move on.")
     try:
@@ -543,9 +631,117 @@ async def apply_to(pw, page, url: str, profile: dict):
     record_applied(url)
 
 
-async def main(urls: list[str]):
+async def _stdin_loop(page, capture_jd, fill_now):
+    """Terminal fallback for the in-page buttons (no extra threads: add_reader)."""
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue()
+    try:
+        loop.add_reader(sys.stdin.fileno(),
+                        lambda: q.put_nowait(sys.stdin.readline()))
+    except Exception:
+        return  # stdin not usable (not a tty) — the buttons still work
+    try:
+        while not page.is_closed():
+            line = await q.get()
+            if not line:
+                return  # EOF
+            cmd = line.strip().lower()
+            if cmd in ("q", "quit", "done"):
+                print("  ok — close the browser tab to finish and log it.")
+                return
+            if cmd == "j":
+                await capture_jd()
+            elif cmd in ("", "f", "fill"):
+                await fill_now()
+            else:
+                print("  ? j = capture JD | [enter]/f = fill this page | q = done")
+    finally:
+        try:
+            loop.remove_reader(sys.stdin.fileno())
+        except Exception:
+            pass
+
+
+async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
+    """No auto-fill. Inject the two buttons + a terminal listener; the user
+    navigates / logs in and triggers a fill on each page they want filled.
+    Closing the tab ends the run and logs it."""
+    state = _new_state()
+    lock = asyncio.Lock()
+
+    async def capture_jd():
+        text = await page.evaluate("() => document.body.innerText")
+        state["jd_text"] = text
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        path = os.path.join(OUTPUT_DIR, f"jd_{slug_for(page.url)}.txt")
+        with open(path, "w") as f:
+            f.write(text)
+        print(f"  captured JD ({len(text)} chars) -> {path}")
+
+    async def fill_now():
+        if lock.locked():
+            print("  (fill already running — ignored)")
+            return
+        async with lock:
+            try:
+                await fill_current_page(pw, page, profile, url, state, cfg)
+            except Exception as e:
+                print(f"  ! fill failed ({type(e).__name__}: {e})")
+                traceback.print_exc()
+
+    await page.expose_function("__agentCaptureJD", capture_jd)
+    await page.expose_function("__agentFill", fill_now)
+    js = open(os.path.join(ROOT_DIR, "agent_button.js")).read()
+    await page.add_init_script(js)      # runs on every future navigation
+    try:
+        await page.evaluate(js)        # inject into the document already on screen
+    except Exception:
+        pass
+
+    print("  MANUAL MODE — buttons injected (bottom-right of the page).")
+    print("  terminal:  j = capture JD   |   [enter] or f = fill this page   |   q = done")
+    print("  log in / click through yourself; trigger a fill on each page you want filled.")
+    print("  close the browser tab when you're finished.")
+
+    stdin_task = asyncio.create_task(_stdin_loop(page, capture_jd, fill_now))
+    try:
+        await page.wait_for_event("close", timeout=0)
+    except Exception:
+        pass
+    stdin_task.cancel()
+    try:
+        await stdin_task
+    except BaseException:
+        pass
+    record_applied(url)
+
+
+async def apply_to(pw, page, url: str, profile: dict, cfg: dict):
+    print(f"\n=== {url}")
+    await page.goto(url, wait_until="domcontentloaded")
+    await page.wait_for_timeout(2000)
+
+    manual = cfg["manual_trigger"]
+    if not manual and cfg["manual_on_login_detected"] and await looks_like_login(page):
+        print("  login page detected — switching to manual mode")
+        manual = True
+
+    if manual:
+        await run_manual(pw, page, url, profile, cfg)
+    else:
+        await run_auto(pw, page, url, profile, cfg)
+
+
+async def main(urls: list[str], cfg: dict):
+    global LLM_MODEL
+    if cfg.get("llm_model"):
+        LLM_MODEL = cfg["llm_model"]
+    if cfg.get("llm_reasoning_effort"):
+        import tailor
+        tailor.LLM_REASONING_EFFORT = cfg["llm_reasoning_effort"]
+
     profile = load_profile()
-    if not FORCE:
+    if not cfg["force"]:
         applied = load_applied()
         email_history = load_email_company_history()
         company_history = load_applied_company_history()
@@ -575,7 +771,7 @@ async def main(urls: list[str]):
             # fresh tab per job — the previous one gets closed by the user after review
             page = await browser.new_page()
             try:
-                await apply_to(pw, page, url, profile)
+                await apply_to(pw, page, url, profile, cfg)
             except Exception as e:
                 print(f"  ! {url} aborted ({type(e).__name__}: {e}) — moving to next job")
                 traceback.print_exc()
@@ -589,13 +785,15 @@ async def main(urls: list[str]):
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    FORCE = False
-    if "--force" in args:
-        FORCE = True
-        args.remove("--force")
-    if "--no-tailor" in args:
-        NO_TAILOR = True
-        args.remove("--no-tailor")
+    cli: dict = {}
+    for flag, key, val in [("--force", "force", True),
+                           ("--no-tailor", "tailor_resume", False),
+                           ("--manual", "manual_trigger", True),
+                           ("-m", "manual_trigger", True),
+                           ("--auto", "manual_trigger", False)]:
+        while flag in args:
+            cli[key] = val
+            args.remove(flag)
     if not args:
         print(__doc__)
         sys.exit(1)
@@ -604,4 +802,5 @@ if __name__ == "__main__":
             urls = [l.strip() for l in f if l.strip() and not l.startswith("#")]
     else:
         urls = args
-    asyncio.run(main(urls))
+    cfg = load_config(cli)
+    asyncio.run(main(urls, cfg))
