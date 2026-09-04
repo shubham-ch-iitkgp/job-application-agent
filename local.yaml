@@ -1,0 +1,31 @@
+# Runtime behavior for main.py. Read ONLY when APP_ENV=local (otherwise ignored).
+# Tracked in git — no secrets live here. Keep every key listed; blank out the ones
+# you don't want to set.
+#
+# Precedence:  built-in defaults  <  local.yaml  <  command-line flags.
+# A blank value keeps the default. profile.yaml still holds your *facts*;
+# this file only holds *behavior*.
+
+# Auto-tailor the resume to the job description before uploading.
+# false = upload the master resume (or the keyword-matched variant) as-is.
+# In manual mode, tailoring also needs a JD captured with the
+# "Capture job description" button.  (CLI: --no-tailor)
+tailor_resume: false
+
+# Don't auto-fill on page load. Inject the in-page buttons + a terminal listener
+# and wait for you to trigger a fill on each page. Use this for Workday /
+# multi-page forms and anything behind a login.
+#   CLI: --manual / -m   (force it back off for one run with --auto)
+manual_trigger: true
+
+# Even when manual_trigger is false, switch to manual automatically if the first
+# page looks like a login / register wall (a password field, or a login-ish URL).
+manual_on_login_detected: true
+
+# Revisit URLs already recorded in data/applied.csv or Gmail history. (CLI: --force)
+force: false
+
+# Optional LLM overrides. Blank = use the LLM_MODEL / LLM_REASONING_EFFORT env
+# vars (see .env.example) or the code defaults.
+llm_model: ""
+llm_reasoning_effort: ""

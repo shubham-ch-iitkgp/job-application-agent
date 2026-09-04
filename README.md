@@ -48,14 +48,35 @@ export LLM_API_KEY=...         # + optional LLM_BASE_URL / LLM_MODEL / LLM_REASO
 ```bash
 python main.py https://boards.greenhouse.io/acme/jobs/12345
 python main.py --queue jobs.txt    # one URL per line
+python main.py --manual <url>      # multi-page / login-walled forms (see below)
 ./apply.sh                          # full pipeline via launcher script
 ```
+
+### Manual mode (`--manual` / `-m`)
+
+For **multi-page forms (Workday)** and anything **behind a login**, where the
+single-shot fill can't work. Nothing is filled on load. Instead the agent injects
+two buttons (bottom-right of the page) — **📋 Capture job description** and
+**🤖 Fill this page** — and a terminal listener (`j` = capture JD, `enter`/`f` =
+fill, `q` = done). You log in / create the account / click **Next** yourself, and
+trigger a fill on each page you want filled. Already-filled fields are left
+untouched. Close the tab when done. Resume tailoring (if enabled) runs once, using
+the JD you captured.
+
+### `local.yaml` (behavior config)
+
+Run with `APP_ENV=local` to read `local.yaml` and skip retyping flags (it's
+ignored otherwise). Keys: `tailor_resume`, `manual_trigger`,
+`manual_on_login_detected` (auto-switch to manual on a login page), `force`,
+`llm_model`, `llm_reasoning_effort` — blank out any you don't want to set.
+Precedence: defaults < `local.yaml` < CLI flags.
 
 ## Notes
 
 - Quality over volume: review every application before submit
 - Don't point this at LinkedIn Easy Apply (ToS) or CAPTCHA-walled flows
-- Workday: log in once in the agent's browser window; the persistent profile
-  remembers
+- Workday / other multi-page or login-walled ATSes: use `--manual` — log in and
+  click through yourself, trigger a fill per page. The persistent profile still
+  remembers the session for next time.
 - Browser profiles, resumes, and application data are gitignored — keep it
   that way; they contain session cookies and personal info
