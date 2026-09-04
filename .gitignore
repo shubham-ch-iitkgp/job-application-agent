@@ -31,3 +31,4 @@ venv/
 # Secrets
 .env
 .env.*
+!.env.example

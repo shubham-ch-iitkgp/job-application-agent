@@ -8,6 +8,19 @@ titles, dates, projects, metrics, or skills that are not in the master resume.
 import os
 import re
 
+# Thinking budget for reasoning-capable models (Gemini 3.x, o-series, ...).
+# "low" is enough for tailoring and form-field mapping without burning thinking
+# tokens; override with LLM_REASONING_EFFORT. Set it to "" to omit the param for
+# models that reject it. Defined here (not main.py) so tailor.py stays importable
+# on its own — main.py imports this helper.
+LLM_REASONING_EFFORT = os.environ.get("LLM_REASONING_EFFORT", "low")
+
+
+def llm_extra_kwargs() -> dict:
+    """reasoning_effort kwarg for chat.completions.create, when configured."""
+    return {"reasoning_effort": LLM_REASONING_EFFORT} if LLM_REASONING_EFFORT else {}
+
+
 ROOT_DIR = os.path.dirname(__file__)
 RESUME_DIR = os.path.join(ROOT_DIR, "resumes")
 OUTPUT_DIR = os.path.join(ROOT_DIR, "outputs")
@@ -112,6 +125,7 @@ def tailor_markdown(llm, model: str, jd_text: str) -> str:
             "role": "user",
             "content": TAILOR_PROMPT.format(master=load_master(), jd=jd_text[:12000]),
         }],
+        **llm_extra_kwargs(),
     )
     md = resp.choices[0].message.content
     return re.sub(r"^```(?:markdown)?\n|\n```$", "", md.strip())
@@ -208,6 +222,7 @@ async def make_cover_letter(pw, llm, model: str, jd_text: str, job_url: str,
                 jd=jd_text[:12000],
             ),
         }],
+        **llm_extra_kwargs(),
     )
     md = re.sub(r"^```(?:markdown)?\n|\n```$", "", resp.choices[0].message.content.strip())
     with open(out_path.replace(".pdf", ".md"), "w") as f:

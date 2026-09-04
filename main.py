@@ -14,12 +14,13 @@ import csv
 import json
 import os
 import sys
+import traceback
 
 import yaml
 from openai import OpenAI
 from playwright.async_api import async_playwright
 
-from tailor import make_cover_letter, make_tailored_resume
+from tailor import llm_extra_kwargs, make_cover_letter, make_tailored_resume
 
 ROOT_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(ROOT_DIR, "data")
@@ -30,7 +31,7 @@ APPLIED_LOG = os.path.join(DATA_DIR, "applied.csv")
 GMAIL_WEB_LOG = os.path.join(DATA_DIR, "gmail_web_job_records.csv")
 GMAIL_API_LOG = os.path.join(DATA_DIR, "gmail_job_records.csv")
 
-LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-5.4")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemini-3.7-flash")
 _llm = None
 
 
@@ -299,9 +300,46 @@ Return ONLY JSON: {{"<idx>": {{"value": "...", "source": "profile|generated|skip
         model=LLM_MODEL,
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
+        **llm_extra_kwargs(),
     )
-    plan = json.loads(resp.choices[0].message.content)
+    content = (resp.choices[0].message.content or "").strip()
+    if not content:
+        finish = resp.choices[0].finish_reason
+        raise RuntimeError(
+            f"LLM returned empty content (finish_reason={finish}). "
+            f"Model {LLM_MODEL} may have hit a length/safety limit — try a "
+            f"different LLM_MODEL in .env."
+        )
+    if content.startswith("```"):  # strip accidental markdown fences
+        content = content.strip("`").removeprefix("json").strip()
+    plan = normalize_plan(json.loads(content), fields)
     return apply_deterministic_answers(plan, fields, profile)
+
+
+def normalize_plan(plan, fields: list[dict]) -> dict:
+    """Coerce whatever JSON shape the LLM returned into {"<idx>": {...}}.
+
+    Models sometimes return a list ([{"idx": 0, "value": ...}, ...] or one entry
+    per field positionally) or wrap the map in a single key ({"answers": {...}}).
+    """
+    if isinstance(plan, dict):
+        # unwrap {"answers": {...}} / {"fields": [...]} style wrappers
+        if len(plan) == 1:
+            (only,) = plan.values()
+            if isinstance(only, (list, dict)):
+                plan = only
+    if isinstance(plan, dict):
+        return {str(k): v for k, v in plan.items()}
+    if isinstance(plan, list):
+        out = {}
+        for pos, item in enumerate(plan):
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("idx", item.get("index", item.get("field", pos)))
+            answer = {k: item[k] for k in ("value", "source") if k in item}
+            out[str(idx)] = answer or item
+        return out
+    return {}
 
 
 def field_blob(field: dict) -> str:
@@ -335,14 +373,37 @@ def apply_deterministic_answers(plan: dict, fields: list[dict], profile: dict) -
             value = f"{personal.get('first_name', '')} {personal.get('last_name', '')}".strip()
         elif "email" in blob:
             value = personal.get("email")
+        elif ("code" in blob and ("country" in blob or "dial" in blob
+              or "isd" in blob or "std" in blob or "phone" in blob
+              or "mobile" in blob)):
+            value = personal.get("phone_country_code")
         elif "phone" in blob or "mobile" in blob:
-            value = personal.get("phone")
+            value = (personal.get("phone_national")
+                     if ("without" in blob or "excluding" in blob
+                         or "no country code" in blob)
+                     else personal.get("phone"))
         elif "linkedin" in blob:
             value = personal.get("linkedin")
         elif "github" in blob:
             value = personal.get("github")
         elif "website" in blob or "portfolio" in blob:
             value = personal.get("website")
+        elif ("current" in blob and ("ctc" in blob or "salary" in blob or "compensation" in blob)):
+            value = personal.get("current_ctc")
+        elif (("expected" in blob or "desired" in blob)
+              and ("ctc" in blob or "salary" in blob or "compensation" in blob)):
+            value = personal.get("expected_ctc") or personal.get("desired_salary")
+        elif "country" in blob:
+            value = personal.get("country")
+        elif ("postal" in blob or "zip" in blob or "pincode" in blob
+              or "pin code" in blob):
+            value = personal.get("postal_code")
+        elif ("state" in blob or "province" in blob) and "united states" not in blob:
+            value = personal.get("state")
+        elif "city" in blob or "town" in blob:
+            value = personal.get("city")
+        elif "street" in blob or "address" in blob:
+            value = personal.get("address_line")
 
         if value:
             plan[idx] = {"value": value, "source": "profile"}
@@ -516,7 +577,8 @@ async def main(urls: list[str]):
             try:
                 await apply_to(pw, page, url, profile)
             except Exception as e:
-                print(f"  ! {url} aborted ({type(e).__name__}) — moving to next job")
+                print(f"  ! {url} aborted ({type(e).__name__}: {e}) — moving to next job")
+                traceback.print_exc()
             if not page.is_closed():
                 try:
                     await page.close()

@@ -40,7 +40,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 # create profile.yaml with your details (name, contact, work history, voice notes)
-export LLM_API_KEY=...         # and optionally LLM_BASE_URL / LLM_MODEL
+export LLM_API_KEY=...         # + optional LLM_BASE_URL / LLM_MODEL / LLM_REASONING_EFFORT
 ```
 
 ## Run

@@ -1,0 +1,196 @@
+# =============================================================================
+# profile.example.yaml  —  template for the job-application agent
+# =============================================================================
+# Copy this to data/profile.yaml and fill in your own details:
+#
+#   mkdir -p data && cp profile.example.yaml data/profile.yaml
+#
+# data/profile.yaml is gitignored — it holds your real personal data and must
+# never be committed. This template is the safe, shareable version.
+#
+# The LLM sees this whole file; `personal` identity/contact fields are also
+# hard-overridden deterministically in main.py (never get an LLM-written value).
+# =============================================================================
+
+personal:
+  legal_first_name: "" # exact name on legal ID (for "legal name" fields)
+  first_name: ""
+  last_name: ""
+  email: ""
+  phone: "" # e.g. "+1-555-0100"
+  phone_country_code: "" # e.g. "+91"
+  phone_national: "" # number without country code, e.g. "5550100"
+  linkedin: "" # e.g. https://linkedin.com/in/your-handle
+  github: "" # e.g. https://github.com/your-handle
+  website: "" # personal site / portfolio
+  location: "" # e.g. "City, Country"
+  address_line: ""
+  address_full: ""
+  city: ""
+  state: ""
+  postal_code: ""
+  country: ""
+
+  # Resume routing. pick_resume() in main.py counts how many of each variant's
+  # `keywords` appear in the posting (URL + job description) and uploads the
+  # best match. A tie, no keyword match, or no variants at all -> resume_path.
+  # To use one resume for everything, just delete resume_variants.
+  resume_path: /absolute/path/to/resumes/Your_Resume.pdf
+  resume_variants:
+    resume_a: # e.g. full-stack / software engineer
+      path: /absolute/path/to/resumes/Your_Resume_A.pdf
+      keywords:
+        [
+          full stack,
+          full-stack,
+          frontend,
+          backend,
+          react,
+          node.js,
+          typescript,
+          web application,
+          api development,
+        ]
+    resume_b: # e.g. DevOps / platform engineer
+      path: /absolute/path/to/resumes/Your_Resume_B.pdf
+      keywords:
+        [
+          devops,
+          sre,
+          site reliability,
+          platform engineer,
+          infrastructure,
+          kubernetes,
+          ci/cd,
+          terraform,
+          observability,
+          cloud engineer,
+        ]
+
+  # Commonly asked on ATS forms — not on your resume, fill what applies:
+  salutation: "" # e.g. "Mr." / "Ms." / "Mx."
+  gender: ""
+  pronouns: "" # e.g. "he/him", "she/her", "they/them"
+  current_title: ""
+  current_company: ""
+  years_of_experience: "" # e.g. "3"
+  notice_period: "" # e.g. "2 months" or "Immediately available"
+  earliest_start_date: "" # e.g. "Immediately"
+  available_to_start: "" # e.g. "Immediately / as soon as possible"
+  desired_salary: "" # add a number/range if you want one filled
+  current_ctc: ""
+  expected_ctc: ""
+  willing_to_relocate: "" # e.g. "Yes" / "No" / "Open to remote"
+  # Work authorization is conditional on where the ROLE is located. The form's
+  # own question names the country; answer using a rule like this:
+  work_authorization: >
+    If this role is based in <your country>: I am authorized to work there and
+    need NO visa or sponsorship. If this role is based elsewhere: I would
+    require work authorization and visa sponsorship for that country.
+  requires_visa_sponsorship: >
+    No for roles located in <your country>. Yes for roles located elsewhere.
+  # "How did you hear about us?" is usually a dropdown — pick by this priority:
+  how_did_you_hear: >
+    Prefer the company's own careers site / company website if that option
+    exists; otherwise LinkedIn; otherwise the closest available option.
+
+# --- Work history -----------------------------------------------------------
+# Each entry is one company. Use the nested `titles` list only if you held
+# multiple roles at the same company; otherwise put `title` + `highlights`
+# directly on the company entry (see the second example below).
+experience:
+  - company: "Example Corp"
+    location: "Remote"
+    start: "2023-01"
+    end: present
+    titles:
+      - title: "Senior Engineer"
+        start: "2024-06"
+        end: present
+        note: "Promoted from Engineer"
+        highlights:
+          - "Shipped <thing> that did <what>, moving <metric> from X to Y."
+          - "Led <project>, cutting <effort/cost/time> by ~N%."
+      - title: "Engineer"
+        start: "2023-01"
+        end: "2024-06"
+        highlights:
+          - "Built <feature> with <tech stack> as part of an N-engineer team."
+          - "Automated <manual process>, reducing <time> from A to B."
+
+  - company: "Prior Startup"
+    location: "City, Country"
+    title: "Software Engineer Intern"
+    start: "2022-05"
+    end: "2022-08"
+    highlights:
+      - "Built <full-stack thing> covering <flow> end to end."
+      - "Designed <pipeline/system> in <tech>, improving <metric> by N%."
+
+# --- Education ------------------------------------------------------------------
+education:
+  - school: "Your University"
+    location: "City, Country"
+    degree: "B.Tech / B.S. / etc."
+    field: "" # major/branch
+    start: "2019"
+    end: "2023"
+    gpa: "" # e.g. "3.8/4.0" or "8.1/10.0"
+
+certifications:
+  - name: "Example Certification"
+    issuer: "Issuing Body"
+    date: "2024-03"
+
+# --- Skills ---------------------------------------------------------------------
+skills:
+  languages: [JavaScript, TypeScript, Python, SQL, Bash]
+  frontend: [React.js, Tailwind CSS]
+  backend: [Node.js, REST APIs, Flask, PostgreSQL]
+  devops_cloud: [Kubernetes, Docker, AWS, GCP, GitHub Actions, Terraform, Linux]
+  observability: [Grafana, Prometheus]
+  # Add / rename categories freely — the LLM just reads the whole block.
+
+competitions:
+  - name: "Example Hackathon / Competition"
+    result: "1st Prize"
+    date: "2022-12"
+    note: "N-member team; built <what> with <tech>."
+
+# --- Work examples the LLM may cite in cover letters / "tell us about a project"
+# Concrete shipped work with real numbers. Add a `link:` (repo/demo/blog) to any
+# you can point to publicly — the LLM will ONLY cite examples that have a link,
+# and will never invent one. List them in priority order.
+work_examples:
+  - what: "Describe a concrete project: what you built, the tech, and the
+      measurable outcome (e.g. throughput 700 -> 1,100 RPS, review time
+      30 min -> 5 min). One tight paragraph."
+    link: "" # https://github.com/... or a demo/blog URL, else leave blank
+
+  - what: "Another shipped project with real numbers and scope. Keep it
+      factual — every claim here can end up in a cover letter."
+    link: ""
+
+# --- Voice / tone for open-ended answers (NOT derivable from a resume) --------
+# How the LLM should sound when it drafts "why do you want to work here",
+# "tell us about yourself", cover-letter prose, etc. Write 3-6 bullet points in
+# your own words. Example starting points — edit heavily:
+voice_notes: |
+  # - Direct and builder-first. No "I am writing to express my interest".
+  # - Lead with what I shipped and the numbers, then why this company.
+  # - Plain sentences, first person, no buzzword stacking.
+  # - Comfortable across the stack: frontend, backend, and the deploy pipeline.
+
+# Optional: paste a cover letter you like as a style reference (leave blank to skip)
+cover_letter_style: ""
+
+# --- EEO / demographic questions (all optional; leave blank to auto-skip) -----
+# US forms usually offer "Decline to self-identify" — safe default for anything
+# you leave blank here.
+eeo:
+  gender: ""
+  sexual_orientation: ""
+  hispanic_latino: ""
+  race_ethnicity: ""
+  veteran_status: ""
+  disability_status: ""
