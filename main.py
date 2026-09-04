@@ -21,15 +21,20 @@ import json
 import os
 import re
 import sys
+import time
 import traceback
+import unicodedata
 
 import yaml
 from openai import OpenAI
 from playwright.async_api import async_playwright
 
 from config import load_config
+from runlog import _clip, _NullLog, open_run_log
 from tailor import (llm_extra_kwargs, make_cover_letter, make_tailored_resume,
                     slug_for)
+
+_NULL_LOG = _NullLog()
 
 ROOT_DIR = os.path.dirname(__file__)
 DATA_DIR = os.path.join(ROOT_DIR, "data")
@@ -279,11 +284,14 @@ async def extract_form_fields(page) -> list[dict]:
     )
 
 
-def plan_answers(fields: list[dict], profile: dict, job_url: str) -> dict:
+def plan_answers(fields: list[dict], profile: dict, job_url: str,
+                 log=_NULL_LOG) -> dict:
     """Ask the LLM to map every form field to a value from the profile.
 
     Returns {field_idx: {"value": str, "source": "profile"|"generated"|"skip"}}.
     """
+    log.event("plan_request", page_url=job_url, model=LLM_MODEL,
+              field_count=len(fields), fields=_clip(fields))
     prompt = f"""You fill job application forms. Map each form field to an answer.
 
 APPLICANT PROFILE (authoritative — never invent facts not present here):
@@ -315,8 +323,10 @@ Return ONLY JSON: {{"<idx>": {{"value": "...", "source": "profile|generated|skip
         **llm_extra_kwargs(),
     )
     content = (resp.choices[0].message.content or "").strip()
+    finish = resp.choices[0].finish_reason
     if not content:
-        finish = resp.choices[0].finish_reason
+        log.event("plan_response", page_url=job_url, raw="", finish_reason=finish,
+                  parsed_ok=False, error="empty content")
         raise RuntimeError(
             f"LLM returned empty content (finish_reason={finish}). "
             f"Model {LLM_MODEL} may have hit a length/safety limit — try a "
@@ -324,8 +334,17 @@ Return ONLY JSON: {{"<idx>": {{"value": "...", "source": "profile|generated|skip
         )
     if content.startswith("```"):  # strip accidental markdown fences
         content = content.strip("`").removeprefix("json").strip()
-    plan = normalize_plan(json.loads(content), fields)
-    return apply_deterministic_answers(plan, fields, profile)
+    try:
+        raw_plan = json.loads(content)
+    except json.JSONDecodeError as e:
+        log.event("plan_response", page_url=job_url, raw=_clip(content),
+                  finish_reason=finish, parsed_ok=False, error=f"JSONDecodeError: {e}")
+        raise
+    plan = normalize_plan(raw_plan, fields)
+    plan = apply_deterministic_answers(plan, fields, profile)
+    log.event("plan_response", page_url=job_url, raw=_clip(content),
+              finish_reason=finish, parsed_ok=True, plan=_clip(plan))
+    return plan
 
 
 def normalize_plan(plan, fields: list[dict]) -> dict:
@@ -425,9 +444,17 @@ def apply_deterministic_answers(plan: dict, fields: list[dict], profile: dict) -
     return plan
 
 
+def _fold(s: str) -> str:
+    """Fold text for loose equality: strip diacritics/combining marks and any
+    non-alphanumerics, lowercase. 'Kàrnátäkǎ' -> 'karnataka'."""
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+
 def field_selector(field: dict) -> str | None:
     """CSS selector for a form control, best identifier first. Shared by
-    fill_field and field_has_value."""
+    fill_field and field_current_value."""
     if field["id"]:
         # attribute form handles IDs that start with digits (Ashby uses UUID ids)
         return f"[id='{field['id']}']"
@@ -445,31 +472,33 @@ def field_selector(field: dict) -> str | None:
     return None
 
 
-async def field_has_value(page, field: dict) -> bool:
-    """True if the control already holds a user-meaningful value, so a re-trigger
-    on the same page leaves it (and anything the user typed) untouched."""
+async def field_current_value(page, field: dict) -> str:
+    """The control's current user-meaningful value as text ('' if empty), so a
+    re-trigger on the same page can leave a filled field (and anything the user
+    typed) untouched — or, for dropdowns we own deterministically, replace a
+    stale / mangled value with the clean one."""
     selector = field_selector(field)
     if not selector:
-        return False
+        return ""
     loc = page.locator(selector).first
     try:
         tag, ftype = field["tag"], field.get("type", "")
         if ftype == "file":
-            return False  # can't read a file input back — allow the (re)upload
+            return ""  # can't read a file input back — allow the (re)upload
         if ftype in ("checkbox", "radio"):
-            return await loc.is_checked()
+            return "checked" if await loc.is_checked() else ""
         if tag in ("input", "textarea"):
-            return bool((await loc.input_value()).strip())
+            return (await loc.input_value()).strip()
         if tag == "select":
             val = (await loc.evaluate(
                 "el => (el.options[el.selectedIndex] || {}).text || ''")).strip()
             opts = field.get("options") or []
-            return bool(val) and (not opts or val != opts[0])
+            return "" if (opts and val == opts[0]) else val
         if tag == "combobox":
-            return bool((await loc.inner_text()).strip())
+            return (await loc.inner_text()).strip()
     except Exception:
-        return False
-    return False
+        return ""
+    return ""
 
 
 async def fill_field(page, field: dict, value: str, resume_path: str,
@@ -488,6 +517,13 @@ async def fill_field(page, field: dict, value: str, resume_path: str,
         elif field["tag"] == "combobox":
             # Greenhouse/React custom dropdown: open, type to filter, pick first match
             await loc.click(timeout=5000)
+            # clear any stale/pre-filled text so a re-select doesn't append to or
+            # fuzzy-match against the old value
+            try:
+                await page.keyboard.press("ControlOrMeta+A")
+                await page.keyboard.press("Delete")
+            except Exception:
+                pass
             await loc.type(value, delay=30)
             await page.wait_for_timeout(800)
             await page.keyboard.press("Enter")
@@ -517,20 +553,36 @@ async def looks_like_login(page) -> bool:
 
 def _new_state() -> dict:
     return {"jd_text": None, "tailored_resume": None, "cover_path": None,
-            "tailored_done": False}
+            "tailored_done": False, "log": _NULL_LOG}
+
+
+def _log_field_outcome(log, page_url, field, ans, outcome, cur=""):
+    """One `field_outcome` line: what the field was, what the plan said, and how
+    fill_current_page's loop resolved it."""
+    log.event("field_outcome", page_url=page_url, idx=field["idx"],
+              label=field.get("label", ""), tag=field.get("tag", ""),
+              type=field.get("type", ""), name=field.get("name", ""),
+              id=field.get("id", ""), required=field.get("required", False),
+              options=field.get("options"),
+              plan_value=_clip((ans or {}).get("value", "")),
+              plan_source=(ans or {}).get("source"),
+              current_value=_clip(cur), outcome=outcome)
 
 
 async def fill_current_page(pw, page, profile: dict, url: str, state: dict, cfg: dict):
     """Extract → plan → fill whatever page is on screen right now. Safe to call
     repeatedly for a multi-page form: already-filled fields are left alone, and
     the tailored resume / cover letter are built once and cached on `state`."""
+    log = state.get("log") or _NULL_LOG
     fields = await extract_form_fields(page)
     if not fields:
         print("  no form fields on this page")
+        log.event("page_fill", page_url=page.url, field_count=0,
+                  counts={"filled": 0, "skipped": 0, "already": 0})
         return
 
     print(f"  {len(fields)} fields found; planning answers with {LLM_MODEL}...")
-    plan = plan_answers(fields, profile, page.url)
+    plan = plan_answers(fields, profile, page.url, log)
 
     page_text = await page.evaluate("() => document.body.innerText")
     jd_text = state.get("jd_text")
@@ -565,17 +617,48 @@ async def fill_current_page(pw, page, profile: dict, url: str, state: dict, cfg:
 
     filled = skipped = already = 0
     for f in fields:
+        label = (f["label"] or f["name"] or f["id"] or f"field#{f['idx']}")[:60]
         ans = plan.get(str(f["idx"]))
-        if not ans or ans.get("source") == "skip" or not ans.get("value"):
+        if not ans:
+            print(f"  skip — no answer planned: {label}")
+            _log_field_outcome(log, page.url, f, ans, "skipped_no_plan")
             skipped += 1
             continue
-        if await field_has_value(page, f):
-            print(f"  already filled, skipping: {(f['label'] or f['name'])[:60]}")
-            already += 1
+        src, val = ans.get("source"), ans.get("value")
+        if src == "skip" or not val:
+            print(f"  skip — {'LLM marked skip' if src == 'skip' else 'no value'}: {label}")
+            _log_field_outcome(log, page.url, f, ans,
+                               "skipped_llm" if src == "skip" else "skipped_no_value")
+            skipped += 1
             continue
-        filled += await fill_field(page, f, ans["value"], resume,
-                                   state["cover_path"] or "")
+        val = str(val)
+        cur = await field_current_value(page, f)
+        if cur:
+            # first text line only — a combobox's inner_text can trail a "remove" glyph
+            head = cur.strip().splitlines()[0].strip()
+            exact = head.lower() == val.strip().lower()
+            # profile-driven dropdown holding *our* value but corrupted by browser
+            # autofill / locale mangling (e.g. "Kàrnátäkǎ" for "Karnataka"): the
+            # folded forms match though the raw text doesn't — replace it.
+            mangled = (not exact and src == "profile"
+                       and f["tag"] in ("select", "combobox")
+                       and _fold(val) != "" and _fold(cur) == _fold(val))
+            if not mangled:
+                print(f"  already filled{'' if exact else f' (kept {cur!r})'}, "
+                      f"skipping: {label}")
+                _log_field_outcome(log, page.url, f, ans,
+                                   "already_filled" if exact else "already_filled_kept", cur)
+                already += 1
+                continue
+            print(f"  re-selecting {label} (value was mangled): {cur!r} -> {val!r}")
+        ok = await fill_field(page, f, val, resume, state["cover_path"] or "")
+        filled += ok
+        _log_field_outcome(log, page.url, f, ans,
+                           "filled" if ok else "fill_failed", cur)
     print(f"  filled {filled}, skipped {skipped}, already-filled {already}")
+    log.event("page_fill", page_url=page.url, field_count=len(fields), resume=resume,
+              cover_path=state["cover_path"] or "",
+              counts={"filled": filled, "skipped": skipped, "already": already})
 
 
 async def run_auto(pw, page, url: str, profile: dict, cfg: dict):
@@ -620,14 +703,24 @@ async def run_auto(pw, page, url: str, profile: dict, cfg: dict):
     # auto mode: the landing page *is* the JD page, so seed it for tailoring
     # (manual mode leaves this None until the user hits "Capture job description")
     state = _new_state()
-    state["jd_text"] = await page.evaluate("() => document.body.innerText")
-    await fill_current_page(pw, page, profile, url, state, cfg)
-    print("  >>> REVIEW the form in the browser window, then click Submit yourself.")
-    print("  >>> When you're done, CLOSE THE BROWSER TAB to move on.")
+    state["log"] = open_run_log(url, slug_for(url), {
+        "mode": "auto", "model": LLM_MODEL, "job_key": job_key(url),
+        "company": company_from_url(url),
+        "cfg": {k: cfg[k] for k in ("manual_trigger", "tailor_resume", "force")},
+    })
+    started = time.monotonic()
     try:
-        await page.wait_for_event("close", timeout=0)
-    except Exception:
-        pass
+        state["jd_text"] = await page.evaluate("() => document.body.innerText")
+        await fill_current_page(pw, page, profile, url, state, cfg)
+        print("  >>> REVIEW the form in the browser window, then click Submit yourself.")
+        print("  >>> When you're done, CLOSE THE BROWSER TAB to move on.")
+        try:
+            await page.wait_for_event("close", timeout=0)
+        except Exception:
+            pass
+    finally:
+        state["log"].event("run_end", url=url, status="reviewed",
+                           duration_s=round(time.monotonic() - started, 1))
     record_applied(url)
 
 
@@ -667,16 +760,37 @@ async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
     navigates / logs in and triggers a fill on each page they want filled.
     Closing the tab ends the run and logs it."""
     state = _new_state()
+    state["log"] = open_run_log(url, slug_for(url), {
+        "mode": "manual", "model": LLM_MODEL, "job_key": job_key(url),
+        "company": company_from_url(url),
+        "cfg": {k: cfg[k] for k in ("manual_trigger", "tailor_resume", "force")},
+    })
+    started = time.monotonic()
     lock = asyncio.Lock()
+    jd_lock = asyncio.Lock()
 
     async def capture_jd():
-        text = await page.evaluate("() => document.body.innerText")
-        state["jd_text"] = text
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
-        path = os.path.join(OUTPUT_DIR, f"jd_{slug_for(page.url)}.txt")
-        with open(path, "w") as f:
-            f.write(text)
-        print(f"  captured JD ({len(text)} chars) -> {path}")
+        if jd_lock.locked():
+            print("  (JD capture already running — ignored)")
+            return
+        async with jd_lock:
+            text = await page.evaluate("() => document.body.innerText")
+            if text == state["jd_text"]:
+                print(f"  JD unchanged ({len(text)} chars) — already captured, skipping")
+                state["log"].event("jd_capture", page_url=page.url, chars=len(text),
+                                   unchanged=True, replaced=False)
+                return
+            replaced = bool(state["jd_text"])
+            if replaced:
+                print("  (replacing the previously captured JD with this page's)")
+            state["jd_text"] = text
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            path = os.path.join(OUTPUT_DIR, f"jd_{slug_for(page.url)}.txt")
+            with open(path, "w") as f:
+                f.write(text)
+            print(f"  captured JD ({len(text)} chars) -> {path}")
+            state["log"].event("jd_capture", page_url=page.url, chars=len(text),
+                               path=path, unchanged=False, replaced=replaced)
 
     async def fill_now():
         if lock.locked():
@@ -713,6 +827,8 @@ async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
         await stdin_task
     except BaseException:
         pass
+    state["log"].event("run_end", url=url, status="reviewed",
+                       duration_s=round(time.monotonic() - started, 1))
     record_applied(url)
 
 

@@ -16,8 +16,9 @@ jobs.txt
 *.docx
 *.pdf
 
-# Logs
+# Logs — plaintext transcripts and structured per-run JSONL (contain profile PII)
 *.log
+logs/
 
 # macOS
 .DS_Store

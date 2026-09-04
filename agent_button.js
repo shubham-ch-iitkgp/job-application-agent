@@ -27,15 +27,32 @@
     });
     b.addEventListener("click", async () => {
       if (b.disabled) return;
+      const now = Date.now();
+      if (now - (b.__lastRun || 0) < 1500) return;   // swallow rapid double-clicks
+      b.__lastRun = now;
       b.disabled = true;
       b.style.opacity = "0.6";
-      const label = b.textContent;
+      const label = b.__label || (b.__label = b.textContent);
       b.textContent = "… working";
+      let ok = true;
       try { await window[spec.fn](); }
-      catch (e) { console.error("[agent]", e); }
-      b.textContent = label;
-      b.style.opacity = "1";
-      b.disabled = false;
+      catch (e) { ok = false; console.error("[agent]", e); }
+      if (spec.id === "__agent_jd_btn" && ok) {
+        // leave a visible "done" state so the user on the page knows the JD
+        // was collected; restore after a few seconds so a new page can be re-captured
+        b.textContent = "✓ JD captured";
+        b.style.background = "#57606a";
+        setTimeout(() => {
+          b.textContent = label;
+          b.style.background = "#1a7f37";
+          b.style.opacity = "1";
+          b.disabled = false;
+        }, 4000);
+      } else {
+        b.textContent = label;
+        b.style.opacity = "1";
+        b.disabled = false;
+      }
     });
     parent.appendChild(b);
   }
