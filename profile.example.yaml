@@ -31,6 +31,12 @@ personal:
   postal_code: ""
   country: ""
 
+  # Public shareable link to your resume (Google Drive / Dropbox / personal site).
+  # Used for ATS fields that ask for a resume URL to paste instead of a file
+  # upload. Leave "" to skip those fields. A local file path never works here.
+  # Each resume_variants entry may add its own `url:` to override this per role.
+  resume_url: ""
+
   # Resume routing. pick_resume() in main.py counts how many of each variant's
   # `keywords` appear in the posting (URL + job description) and uploads the
   # best match. A tie, no keyword match, or no variants at all -> resume_path.
@@ -39,6 +45,7 @@ personal:
   resume_variants:
     resume_a: # e.g. full-stack / software engineer
       path: /absolute/path/to/resumes/Your_Resume_A.pdf
+      url: "" # optional shareable link for this variant (falls back to resume_url)
       keywords:
         [
           full stack,
@@ -53,6 +60,7 @@ personal:
         ]
     resume_b: # e.g. DevOps / platform engineer
       path: /absolute/path/to/resumes/Your_Resume_B.pdf
+      url: "" # optional shareable link for this variant (falls back to resume_url)
       keywords:
         [
           devops,

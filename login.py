@@ -21,8 +21,15 @@ PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".browser-profile")
 
 async def main(url: str):
     async with async_playwright() as pw:
+        # Match main.py's launch: use the whole window, and soften the automation
+        # signals so Google/OAuth sign-in is less likely to reject the browser.
         ctx = await pw.chromium.launch_persistent_context(
-            user_data_dir=PROFILE_DIR, headless=False)
+            user_data_dir=PROFILE_DIR, headless=False,
+            no_viewport=True,
+            args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
+            ignore_default_args=["--enable-automation"])
+        await ctx.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await page.goto(url)
         print(f"Opened {url}")
