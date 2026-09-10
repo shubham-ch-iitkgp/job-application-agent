@@ -12,6 +12,19 @@
 (() => {
   if (window.top !== window) return;   // top frame only — no per-iframe duplicates
 
+  // Bot-challenge / OAuth pages: don't inject anything. The MutationObserver +
+  // interval below churn document.documentElement, which breaks Cloudflare's
+  // Turnstile widget mid-run and loops the "security verification" forever
+  // (instahyre Google SSO). Also keeps the bar off the Google consent screen.
+  const _h = location.hostname, _p = location.pathname;
+  if (
+    _h === "challenges.cloudflare.com" ||
+    _p.startsWith("/cdn-cgi/challenge-platform/") ||
+    /^(accounts|login)\.google\.com$/.test(_h) ||
+    _h === "accounts.youtube.com" ||
+    document.title === "Just a moment..."
+  ) return;
+
   const GREEN = "#1a7f37";
   const BAR_ID = "__agent_bar";
   const BTNS = [

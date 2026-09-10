@@ -21,13 +21,21 @@ PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".browser-profile")
 
 async def main(url: str):
     async with async_playwright() as pw:
-        # Match main.py's launch: use the whole window, and soften the automation
-        # signals so Google/OAuth sign-in is less likely to reject the browser.
-        ctx = await pw.chromium.launch_persistent_context(
+        # Match main.py's launch: real Chrome (channel="chrome"), whole window, and
+        # softened automation signals so Google/OAuth sign-in and Cloudflare bot
+        # checks are less likely to reject the browser. Falls back to Playwright's
+        # bundled Chromium if Chrome isn't installed.
+        launch_kwargs = dict(
             user_data_dir=PROFILE_DIR, headless=False,
             no_viewport=True,
             args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
             ignore_default_args=["--enable-automation"])
+        try:
+            ctx = await pw.chromium.launch_persistent_context(
+                channel="chrome", **launch_kwargs)
+        except Exception as e:
+            print(f"real Chrome unavailable ({e}); falling back to bundled Chromium")
+            ctx = await pw.chromium.launch_persistent_context(**launch_kwargs)
         await ctx.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()

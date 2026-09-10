@@ -48,9 +48,20 @@ export LLM_API_KEY=...         # + optional LLM_BASE_URL / LLM_MODEL / LLM_REASO
 ```bash
 python main.py https://boards.greenhouse.io/acme/jobs/12345
 python main.py --queue jobs.txt    # one URL per line
+python main.py --queue jobs.txt --parallel 5   # 5 applications open at once (see below)
 python main.py --manual <url>      # multi-page / login-walled forms (see below)
 ./apply.sh                          # full pipeline via launcher script
 ```
+
+### Parallel fill (`--parallel N` / `-p N`)
+
+By default the agent works the queue one tab at a time — while you review one
+form, nothing else is loading. `--parallel N` keeps **N tabs open at once** in the
+same window: close any tab when you're done with it and the next queued job
+immediately opens in a fresh tab, so there are always N applications in flight
+until the queue drains. Also settable as `parallel:` in `local.yaml`. In manual
+mode with `N > 1`, drive each tab with its **in-page buttons** — the terminal
+`j/f/o/a/x/q` shortcuts only work when `N` is 1.
 
 ### Manual mode (`--manual` / `-m`)
 
@@ -78,5 +89,14 @@ Precedence: defaults < `local.yaml` < CLI flags.
 - Workday / other multi-page or login-walled ATSes: use `--manual` — log in and
   click through yourself, trigger a fill per page. The persistent profile still
   remembers the session for next time.
+- The agent drives your installed **Google Chrome** (`channel="chrome"`), falling
+  back to Playwright's bundled Chromium if Chrome isn't found. It still uses its
+  own `.browser-profile`, separate from your personal Chrome profile, so the two
+  run side by side without touching each other's cookies/history/extensions. If
+  you previously ran on bundled Chromium, delete `.browser-profile` once (a
+  newer-version profile can't be reopened by stable Chrome) and re-login.
+- Google SSO (e.g. instahyre): run `python login.py https://accounts.google.com`
+  once so the profile is signed into Google — the site's "Sign in with Google"
+  then redirects silently instead of showing a challenge-prone consent page.
 - Browser profiles, resumes, and application data are gitignored — keep it
   that way; they contain session cookies and personal info

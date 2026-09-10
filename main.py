@@ -3,6 +3,10 @@
 Usage:
     python main.py <job_url> [<job_url> ...]
     python main.py --queue jobs.txt        # one URL per line
+    python main.py --parallel 5            # no URL / --queue → work data/jobs.txt;
+                                           # keep 5 applications open at once, and
+                                           # as you close a tab the next job opens
+                                           # in its place (-p 5 for short)
     python main.py --manual <job_url>      # don't auto-fill; drive it yourself with
                                            # the in-page buttons / terminal (j, enter, q)
 
@@ -42,8 +46,10 @@ OUTPUT_DIR = os.path.join(ROOT_DIR, "outputs")
 BROWSER_PROFILE_DIR = os.path.join(ROOT_DIR, ".browser-profile")
 
 PROFILE_PATH = os.path.join(DATA_DIR, "profile.yaml")
+DEFAULT_QUEUE = os.path.join(DATA_DIR, "jobs.txt")  # used when flags but no URL/--queue
 APPLIED_LOG = os.path.join(DATA_DIR, "applied.csv")
-# applied.csv is headerless; record_applied() only appends data rows.
+# applied.csv is headerless; record_applied() only appends data rows. The first
+# column is a "YYYY-MM-DD HH:MM:SS" timestamp (date + time of the run).
 APPLIED_FIELDS = ["date", "company", "url", "status"]
 GMAIL_WEB_LOG = os.path.join(DATA_DIR, "gmail_web_job_records.csv")
 GMAIL_API_LOG = os.path.join(DATA_DIR, "gmail_job_records.csv")
@@ -244,7 +250,8 @@ def record_applied(url: str, status: str = "reviewed"):
     else:
         company = host.removeprefix("www.").split(".")[0]
     with open(APPLIED_LOG, "a") as f:
-        f.write(f"{datetime.date.today()},{company},{url},{status}\n")
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        f.write(f"{ts},{company},{url},{status}\n")
 
 
 # Runs inside a single frame's document. Pulled out as a constant so
@@ -725,7 +732,9 @@ async def fill_current_page(pw, page, profile: dict, url: str, state: dict, cfg:
 
     start_url = page.url  # bail out of the loop if the page navigates mid-fill
     print(f"  {len(fields)} fields found; planning answers with {LLM_MODEL}...")
-    plan = plan_answers(fields, profile, page.url, log)
+    # off-thread: the LLM call is blocking, and under --parallel other tabs
+    # share this event loop.
+    plan = await asyncio.to_thread(plan_answers, fields, profile, page.url, log)
 
     page_text, _ = await page_main_text(page)
     jd_text = state.get("jd_text")
@@ -832,7 +841,9 @@ async def run_auto(pw, page, url: str, profile: dict, cfg: dict):
                     "a:has-text('apply now')", "button:has-text('Apply Now')",
                     "button:has-text('Submit application')", "a:has-text('Apply to')"]:
             try:
-                async with page.context.expect_page(timeout=4000) as popup_info:
+                # expect_popup (not context.expect_page) so a concurrent --parallel
+                # worker's new tab can't be mistaken for this Apply button's popup.
+                async with page.expect_popup(timeout=4000) as popup_info:
                     await page.locator(sel).first.click(timeout=4000)
                 page = await popup_info.value  # form opened in a new tab
                 break
@@ -1046,26 +1057,37 @@ async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
     except Exception:
         pass
 
+    # With --parallel >1, several manual tabs share one stdin — asyncio allows
+    # only one reader on it — so the terminal listener is single-tab only.
+    terminal = int(cfg.get("parallel", 1) or 1) <= 1
+
     print("  MANUAL MODE — buttons injected (top-right of the page).")
-    print("  terminal:  j=capture JD | f=fill | o=fill(overwrite) | a=abort fill | "
-          "x=mark failed | q=done")
+    if terminal:
+        print("  terminal:  j=capture JD | f=fill | o=fill(overwrite) | a=abort fill | "
+              "x=mark failed | q=done")
+    else:
+        print("  parallel mode — drive this tab with the in-page buttons "
+              "(terminal commands are off).")
     print("  log in / click through yourself; trigger a fill on each page you want filled.")
     print("  'Fill (overwrite)' / 'o' re-fills fields that already hold (stale) values.")
     print("  'Abort fill' / 'a' cancels a fill that's stuck.")
     print("  if the application can't be submitted, hit 'Mark application failed' (or 'x').")
     print("  close the browser tab when you're finished.")
 
-    stdin_task = asyncio.create_task(_stdin_loop(
-        page, capture_jd, fill_now, mark_failed, fill_overwrite, abort_fill))
+    stdin_task = None
+    if terminal:
+        stdin_task = asyncio.create_task(_stdin_loop(
+            page, capture_jd, fill_now, mark_failed, fill_overwrite, abort_fill))
     try:
         await page.wait_for_event("close", timeout=0)
     except Exception:
         pass
-    stdin_task.cancel()
-    try:
-        await stdin_task
-    except BaseException:
-        pass
+    if stdin_task is not None:
+        stdin_task.cancel()
+        try:
+            await stdin_task
+        except BaseException:
+            pass
     status = "failed" if state["failed"] else "reviewed"
     state["log"].event("run_end", url=url, status=status,
                        duration_s=round(time.monotonic() - started, 1))
@@ -1125,30 +1147,70 @@ async def main(urls: list[str], cfg: dict):
         # AutomationControlled off / --enable-automation dropped / navigator.webdriver
         #   masked: best-effort so Google OAuth ("this browser may not be secure")
         #   and similar bot checks are less likely to reject the sign-in.
-        browser = await pw.chromium.launch_persistent_context(
+        # channel="chrome": drive the installed Google Chrome, not Playwright's
+        #   bundled Chromium ("Chrome for Testing"). The CfT build has non-Chrome
+        #   client-hint brands / no component updater / a way-ahead version, which
+        #   Cloudflare's managed challenge scores as a bot and loops forever
+        #   (instahyre Google SSO). Falls back to bundled Chromium if Chrome isn't
+        #   installed. Uses its own .browser-profile, separate from your personal
+        #   Chrome profile.
+        launch_kwargs = dict(
             user_data_dir=BROWSER_PROFILE_DIR,
             headless=False,
             no_viewport=True,
             args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
             ignore_default_args=["--enable-automation"],
         )
+        try:
+            browser = await pw.chromium.launch_persistent_context(
+                channel="chrome", **launch_kwargs
+            )
+        except Exception as e:
+            print(f"  ! real Chrome unavailable ({e}); falling back to bundled Chromium")
+            browser = await pw.chromium.launch_persistent_context(**launch_kwargs)
         await browser.add_init_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
         )
-        for url in urls:
-            # fresh tab per job — the previous one gets closed by the user after review
-            page = await browser.new_page()
+
+        # Rolling window of N tabs: each worker takes the next queued URL, opens a
+        # fresh tab, and blocks (in apply_to) until the user closes it — then grabs
+        # the next. N workers ⇒ always N applications open at once. N=1 is the old
+        # sequential behavior. pending.pop(0) is safe without a lock: asyncio is
+        # single-threaded and there's no await between the check and the pop.
+        parallel = max(1, int(cfg.get("parallel", 1) or 1))
+        pending = list(urls)
+        if parallel > 1:
+            print(f"  parallel   : up to {parallel} applications open at once")
             try:
-                await apply_to(pw, page, url, profile, cfg)
-            except Exception as e:
-                print(f"  ! {url} aborted ({type(e).__name__}: {e}) — moving to next job")
-                traceback.print_exc()
-            if not page.is_closed():
+                get_llm()  # warm the shared client before threads race its lazy init
+            except Exception:
+                pass       # no/blank key — let the per-tab fill surface it as before
+
+        async def worker():
+            while pending:
+                url = pending.pop(0)
+                # fresh tab per job — the user closes it after review
+                page = await browser.new_page()
                 try:
-                    await page.close()
-                except Exception:
-                    pass
+                    await apply_to(pw, page, url, profile, cfg)
+                except Exception as e:
+                    print(f"  ! {url} aborted ({type(e).__name__}: {e}) — moving to next job")
+                    traceback.print_exc()
+                if not page.is_closed():
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+
+        await asyncio.gather(*[asyncio.create_task(worker())
+                               for _ in range(min(parallel, len(pending)))])
         await browser.close()
+
+
+def read_queue(path: str) -> list[str]:
+    """One job URL per line; blank lines and #-comments ignored."""
+    with open(path) as f:
+        return [l.strip() for l in f if l.strip() and not l.startswith("#")]
 
 
 if __name__ == "__main__":
@@ -1162,13 +1224,27 @@ if __name__ == "__main__":
         while flag in args:
             cli[key] = val
             args.remove(flag)
-    if not args:
+    for opt in ("--parallel", "-p"):
+        while opt in args:
+            i = args.index(opt)
+            try:
+                cli["parallel"] = max(1, int(args[i + 1]))
+            except (IndexError, ValueError):
+                print("  --parallel needs an integer, e.g. --parallel 5")
+                sys.exit(1)
+            del args[i:i + 2]
+    if not sys.argv[1:]:                       # bare `python main.py` → usage
         print(__doc__)
         sys.exit(1)
-    if args[0] == "--queue":
-        with open(args[1]) as f:
-            urls = [l.strip() for l in f if l.strip() and not l.startswith("#")]
-    else:
+    if args and args[0] == "--queue":
+        urls = read_queue(args[1])
+    elif args:
         urls = args
+    else:                                      # flags only, no URL/--queue → default queue
+        if not os.path.exists(DEFAULT_QUEUE):
+            print(f"  no job URLs given and {DEFAULT_QUEUE} not found")
+            sys.exit(1)
+        print(f"  queue      : {DEFAULT_QUEUE}")
+        urls = read_queue(DEFAULT_QUEUE)
     cfg = load_config(cli)
     asyncio.run(main(urls, cfg))

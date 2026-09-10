@@ -25,6 +25,12 @@ manual_on_login_detected: true
 # Revisit URLs already recorded in data/applied.csv or Gmail history. (CLI: --force)
 force: false
 
+# How many job applications to keep open at once on a queue run. Close any tab
+# and the next queued job opens in its place, so the window always holds this
+# many in flight. 1 = one at a time (today's behavior). Manual mode under >1 is
+# driven by the in-page buttons only (no terminal commands).  CLI: --parallel N / -p N
+parallel:
+
 # Optional LLM overrides. Blank = use the LLM_MODEL / LLM_REASONING_EFFORT env
 # vars (see .env.example) or the code defaults.
 llm_model: ""

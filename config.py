@@ -19,6 +19,7 @@ DEFAULTS = {
     "manual_trigger": False,            # True = don't auto-fill; wait for a trigger
     "manual_on_login_detected": False,  # True = go manual if the landing page is a login wall
     "force": False,                     # revisit URLs already in applied.csv / email history
+    "parallel": 1,                      # tabs/applications open at once on a queue run (1 = sequential)
     "llm_model": "",                    # blank = keep env LLM_MODEL / code default
     "llm_reasoning_effort": "",         # blank = keep env LLM_REASONING_EFFORT / code default
 }
@@ -52,5 +53,5 @@ def load_config(cli: dict | None = None) -> dict:
             cfg[k] = v
     if os.environ.get("APP_ENV") == "local" and os.path.exists(LOCAL_YAML):
         print(f"  config: local.yaml active (manual_trigger={cfg['manual_trigger']}, "
-              f"tailor_resume={cfg['tailor_resume']})")
+              f"tailor_resume={cfg['tailor_resume']}, parallel={cfg['parallel']})")
     return cfg
