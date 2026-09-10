@@ -520,6 +520,10 @@ def apply_deterministic_answers(plan: dict, fields: list[dict], profile: dict) -
             value = f"{personal.get('first_name', '')} {personal.get('last_name', '')}".strip()
         elif "email" in blob:
             value = personal.get("email")
+        elif "password" in blob:
+            # `type=password` lands in the blob, so this also covers a
+            # "Confirm password" / "Re-enter password" field — same value.
+            value = personal.get("password")
         elif ("code" in blob and ("country" in blob or "dial" in blob
               or "isd" in blob or "std" in blob or "phone" in blob
               or "mobile" in blob)):
@@ -557,6 +561,20 @@ def apply_deterministic_answers(plan: dict, fields: list[dict], profile: dict) -
             value = personal.get("address_line")
 
         if value:
+            # for a dropdown, resolve the canonical profile token to the actual
+            # option label the ATS renders ('Karnataka' -> 'Karnātaka'; a bare
+            # dial code '+91' -> the 'India (+91)' option it's shown under).
+            opts = field.get("options")
+            if opts and field.get("tag") in ("select", "combobox"):
+                cands = [value]
+                if re.fullmatch(r"\+\d{1,4}", value.strip()) and personal.get("country"):
+                    c = personal["country"]
+                    cands = [f"{c} ({value})", f"{c} {value}", value]
+                for cand in cands:
+                    m = _match_option(cand, opts)
+                    if m:
+                        value = m
+                        break
             plan[idx] = {"value": value, "source": "profile"}
             overrides.append((idx, value))
     if overrides:
@@ -570,6 +588,33 @@ def _fold(s: str) -> str:
     s = unicodedata.normalize("NFKD", s or "")
     s = "".join(c for c in s if not unicodedata.combining(c))
     return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+
+def _match_option(value: str, options: list[str] | None) -> str | None:
+    """Resolve `value` to the real <option> label it corresponds to, tolerating
+    accents / case / punctuation. Returns the option string to hand Playwright,
+    or None when nothing matches unambiguously (caller then keeps the raw value
+    so Playwright's own exact match still fails loudly rather than picking wrong).
+
+    The profile stores canonical tokens ('Karnataka', 'India (+91)'); an ATS may
+    render 'Karnātaka' or 'India +91'. Tiers, first hit wins:
+      1. exact string
+      2. folded-equal (fixes the accent case)
+      3. unique folded-substring — only if EXACTLY ONE option contains the folded
+         value; refuses ambiguous picks (e.g. '+91' -> 'india91' is also a
+         substring of 'bolivia591', so it resolves to nothing, not to Bolivia).
+    """
+    if not options or _fold(value) == "":
+        return None
+    for o in options:
+        if o == value:
+            return o
+    fv = _fold(value)
+    for o in options:
+        if _fold(o) == fv:
+            return o
+    subs = [o for o in options if fv in _fold(o)]
+    return subs[0] if len(subs) == 1 else None
 
 
 def field_selector(field: dict) -> str | None:
@@ -621,7 +666,15 @@ async def field_current_value(page, field: dict) -> str:
             opts = field.get("options") or []
             return "" if (opts and val == opts[0]) else val
         if tag == "combobox":
-            return (await loc.inner_text()).strip()
+            raw = (await loc.inner_text()).strip()
+            txt = raw.splitlines()[0].strip() if raw else ""
+            # a combobox showing only its placeholder ("Select One", "Please
+            # Select", "Choose...") holds no real answer — treat it as empty so
+            # the fill isn't skipped as already_filled.
+            if _fold(txt) in ("selectone", "pleaseselect", "select",
+                              "selectanoption", "choose", "none", "selectavalue"):
+                return ""
+            return txt
     except Exception:
         return ""
     return ""
@@ -655,7 +708,11 @@ async def fill_field(page, field: dict, value: str, resume_path: str,
                 return False
             await loc.set_input_files(cover_path)
         elif field["tag"] == "combobox":
-            # Greenhouse/React custom dropdown: open, type to filter, pick first match
+            # Greenhouse/React/Workday custom dropdown: open, type to filter, then
+            # click the option whose label matches — tolerating accent/case/
+            # punctuation. Workday renders "Karnātaka", so typing ASCII
+            # "Karnataka" filters to nothing and a blind Enter commits the first
+            # row ("Andaman and Nicobar Islands") instead.
             await loc.click(timeout=5000)
             # clear any stale/pre-filled text so a re-select doesn't append to or
             # fuzzy-match against the old value
@@ -666,7 +723,19 @@ async def fill_field(page, field: dict, value: str, resume_path: str,
                 pass
             await loc.type(value, delay=30)
             await page.wait_for_timeout(800)
-            await kb.press("Enter")
+            picked = False
+            try:
+                opts = page.locator('[role="option"]:visible')
+                texts = [t.strip() for t in await opts.all_inner_texts()]
+                target = _match_option(value, texts)
+                if target is not None:
+                    idx = next(i for i, t in enumerate(texts) if t == target)
+                    await opts.nth(idx).click(timeout=FILL_ACTION_TIMEOUT_MS)
+                    picked = True
+            except Exception:
+                pass
+            if not picked:
+                await kb.press("Enter")
         elif field["tag"] == "select":
             # iCIMS &co. hide the native <select> and drive a custom widget;
             # select_option would just retry the hidden element for the full
@@ -674,7 +743,16 @@ async def fill_field(page, field: dict, value: str, resume_path: str,
             if not await loc.is_visible():
                 print(f"  ! <select> hidden (custom widget?), skipping: {field['label']}")
                 return None
-            await loc.select_option(label=value, timeout=FILL_ACTION_TIMEOUT_MS)
+            # match against the LIVE options (Workday re-renders State / phone-code
+            # lists after Country changes, so field["options"] can be stale) and
+            # tolerate accent/case/punctuation differences in the label.
+            try:
+                live = await loc.evaluate(
+                    "el => Array.from(el.options).map(o => o.text.trim())")
+            except Exception:
+                live = field.get("options") or []
+            target = _match_option(value, live) or value
+            await loc.select_option(label=target, timeout=FILL_ACTION_TIMEOUT_MS)
         elif field["type"] in ("checkbox", "radio"):
             if value.lower() in ("yes", "true", "1"):
                 await loc.check(timeout=FILL_ACTION_TIMEOUT_MS)

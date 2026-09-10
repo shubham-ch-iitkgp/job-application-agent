@@ -17,6 +17,7 @@ personal:
   first_name: ""
   last_name: ""
   email: ""
+  password: "" # for ATS "create an account" password fields; keep it quoted
   phone: "" # e.g. "+1-555-0100"
   phone_country_code: "" # e.g. "+91"
   phone_national: "" # number without country code, e.g. "5550100"
