@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Job Clipboard v10</title>
+<style>
+:root {
+  --bg: #0d0d0d; --surface: #141414; --surface2: #1a1a1a;
+  --border: #2a2a2a; --text: #e8e6e0; --text2: #6b6b6b;
+  --accent: #f59e0b; --accent-dim: rgba(245,158,11,0.15);
+  --success: #22c55e; --danger: #ef4444;
+  --font: "SF Mono","Fira Code","Cascadia Code","Consolas",monospace;
+}
+[data-theme="light"] {
+  --bg: #f7f5f0; --surface: #ffffff; --surface2: #f0ede8;
+  --border: #e0ddd5; --text: #1a1a1a; --text2: #8a8a8a;
+  --accent: #d97706; --accent-dim: rgba(217,119,6,0.10);
+  --success: #16a34a; --danger: #dc2626;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; overflow-y: auto;
+  background: var(--bg); color: var(--text);
+  font-family: var(--font); font-size: 13px;
+  background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+#app-header {
+  position: sticky; top: 0; z-index: 100; height: 52px;
+  display: flex; align-items: center; gap: 12px; padding: 0 16px;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+}
+.header-logo {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 700; letter-spacing: 0.1em;
+  color: var(--accent); white-space: nowrap;
+}
+.header-search-wrap {
+  flex: 1; display: flex; align-items: center; gap: 8px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 0 10px; max-width: 360px;
+}
+.header-search-wrap input {
+  flex: 1; background: transparent; border: none; outline: none;
+  color: var(--text); font-family: var(--font); font-size: 12px; padding: 6px 0;
+}
+.header-search-wrap input::placeholder { color: var(--text2); }
+#search-clear {
+  background: transparent; border: none; color: var(--text2);
+  cursor: pointer; font-size: 16px; padding: 0 2px; line-height: 1;
+}
+.header-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+#card-grid {
+  column-count: 4; column-gap: 12px; padding: 12px;
+}
+.card {
+  break-inside: avoid; -webkit-column-break-inside: avoid; page-break-inside: avoid;
+  display: block; margin-bottom: 12px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; overflow: visible;
+}
+.card-header {
+  padding: 12px 14px 10px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.card-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--text2); font-weight: 600;
+}
+.card-title::before { content: "// "; color: var(--accent); }
+.card-body { padding: 12px 14px; }
+@media (max-width: 1400px) { #card-grid { column-count: 3; } }
+@media (max-width: 1024px) { #card-grid { column-count: 2; } }
+@media (max-width: 768px) { #card-grid { column-count: 1; } }
+.field-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.field-row:last-child { border-bottom: none; }
+.field-label {
+  display: flex; align-items: center; gap: 4px;
+  flex-shrink: 0; width: 100px; font-size: 9px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text2); padding-top: 4px;
+}
+.field-label .icon { flex-shrink: 0; }
+.field-value {
+  flex: 1; display: flex; align-items: center;
+  gap: 4px; flex-wrap: wrap; min-width: 0;
+}
+.field-input {
+  flex: 1; min-width: 60px; background: transparent;
+  border: none; border-bottom: 1px solid transparent;
+  color: var(--text); font-family: var(--font);
+  font-size: 12px; padding: 3px 0; outline: none;
+  transition: border-color 0.15s;
+}
+body.edit-mode .field-input { border-bottom-color: var(--border); cursor: text; }
+body.edit-mode .field-input:focus { border-bottom-color: var(--accent); }
+body:not(.edit-mode) .field-input { pointer-events: none; }
+[data-theme="light"] body.edit-mode .field-input {
+  border: 1px solid var(--border); border-radius: 3px;
+  padding: 3px 6px; background: var(--surface);
+}
+textarea.field-input {
+  min-height: 100px; resize: vertical;
+  border: 1px solid transparent; border-radius: 4px;
+  padding: 6px; width: 100%;
+}
+body.edit-mode textarea.field-input { border-color: var(--border); }
+.btn-copy {
+  display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+  background: var(--surface2); border: 1px solid var(--border); color: var(--text2);
+  border-radius: 4px; padding: 3px 7px; font-family: var(--font); font-size: 9px;
+  cursor: pointer; transition: all 0.15s; min-height: 26px; white-space: nowrap; flex-shrink: 0;
+}
+.btn-copy:hover { border-color: var(--accent); color: var(--accent); }
+.btn-copy.copied { border-color: var(--success); color: var(--success); transform: scale(0.95); }
+.btn-sm { padding: 2px 5px; font-size: 8px; }
+.btn-primary {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--accent); color: #000; border: none; border-radius: 16px;
+  padding: 5px 12px; font-family: var(--font); font-size: 11px; font-weight: 700;
+  cursor: pointer; min-height: 32px;
+}
+.btn-secondary {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; border: 1px solid var(--border); color: var(--text2);
+  border-radius: 16px; padding: 5px 12px; font-family: var(--font); font-size: 11px;
+  cursor: pointer; min-height: 32px;
+}
+.btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+.btn-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; background: transparent; border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text2); cursor: pointer;
+}
+.btn-icon:hover { border-color: var(--accent); color: var(--accent); }
+.btn-danger { border-color: var(--danger); color: var(--danger); }
+.btn-danger:hover { background: rgba(239,68,68,0.1); }
+.icon { width: 16px; height: 16px; stroke: currentColor; fill: none; flex-shrink: 0; }
+.icon-sm { width: 14px; height: 14px; }
+.icon-xs { width: 11px; height: 11px; }
+.entry-card {
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px; margin-bottom: 10px; background: var(--surface2);
+}
+.entry-card-header {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;
+}
+.entry-label { font-size: 9px; color: var(--text2); letter-spacing: 0.06em; text-transform: uppercase; }
+.btn-add-entry { display: none; margin-top: 8px; }
+body.edit-mode .btn-add-entry { display: inline-flex; }
+.btn-add-custom { display: none; margin-top: 8px; }
+body.edit-mode .btn-add-custom { display: inline-flex; }
+.btn-delete-entry, .btn-delete-custom { display: none; }
+body.edit-mode .btn-delete-entry, body.edit-mode .btn-delete-custom { display: inline-flex; }
+.drop-zone {
+  border: 2px dashed var(--border); border-radius: 8px; padding: 20px;
+  text-align: center; color: var(--text2); transition: all 0.2s;
+  margin-bottom: 10px; font-size: 11px; cursor: pointer;
+}
+.drop-zone.drag-over { border-color: var(--accent); background: var(--accent-dim); color: var(--accent); }
+.file-item {
+  display: flex; align-items: center; gap: 8px; padding: 8px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 5px; margin-bottom: 6px;
+}
+.file-info { flex: 1; min-width: 0; }
+.file-name { font-size: 11px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file-meta { font-size: 9px; color: var(--text2); }
+.storage-bar-wrap { margin-top: 10px; }
+.storage-bar-label { display: flex; justify-content: space-between; font-size: 9px; color: var(--text2); margin-bottom: 4px; }
+.storage-bar { height: 3px; background: var(--surface2); border-radius: 2px; overflow: hidden; }
+.storage-bar-fill { height: 100%; background: var(--accent); transition: width 0.3s; }
+.storage-bar-fill.warn { background: var(--danger); }
+.custom-field-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 0; border-bottom: 1px dashed var(--border);
+}
+.custom-label-input {
+  background: transparent; border: none; border-bottom: 1px solid var(--border);
+  color: var(--text2); font-family: var(--font); font-size: 9px;
+  text-transform: uppercase; letter-spacing: 0.08em; width: 90px; outline: none;
+}
+#toast {
+  position: fixed; bottom: 20px; right: 20px;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--success); padding: 8px 14px; border-radius: 6px;
+  font-size: 11px; z-index: 9999; opacity: 0; transform: translateY(10px);
+  transition: all 0.2s; pointer-events: none;
+}
+#toast.show { opacity: 1; transform: translateY(0); }
+#editing-badge {
+  background: var(--accent); color: #000; font-size: 10px;
+  padding: 3px 10px; border-radius: 10px; font-weight: 700; letter-spacing: 0.05em;
+}
+</style>
+</head>
+<body>
+
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="icon-contact" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+  </symbol>
+  <symbol id="icon-resume" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="10" y1="13" x2="14" y2="13"/><path d="M14 17l2-2-2-2"/>
+  </symbol>
+  <symbol id="icon-name" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+  </symbol>
+  <symbol id="icon-phone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.15 12 19.79 19.79 0 0 1 1.05 3.4 2 2 0 0 1 3 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 8.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
+  </symbol>
+  <symbol id="icon-email" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>
+  </symbol>
+  <symbol id="icon-location" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>
+  </symbol>
+  <symbol id="icon-linkedin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="2" width="20" height="20" rx="4"/><line x1="8" y1="11" x2="8" y2="16"/><line x1="8" y1="8" x2="8" y2="8.5"/><line x1="12" y1="16" x2="12" y2="11"/><path d="M12 13a2 2 0 0 1 4 0v3"/>
+  </symbol>
+  <symbol id="icon-github" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+  </symbol>
+  <symbol id="icon-portfolio" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+  </symbol>
+  <symbol id="icon-education" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/>
+  </symbol>
+  <symbol id="icon-work" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/>
+  </symbol>
+  <symbol id="icon-skills" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+  </symbol>
+  <symbol id="icon-projects" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+  </symbol>
+  <symbol id="icon-qa" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12" y2="17.5"/>
+  </symbol>
+  <symbol id="icon-pitch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+  </symbol>
+  <symbol id="icon-notes" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="12" y2="9"/>
+  </symbol>
+  <symbol id="icon-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+  </symbol>
+  <symbol id="icon-date" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+  </symbol>
+  <symbol id="icon-ctc" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+  </symbol>
+  <symbol id="icon-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+  </symbol>
+  <symbol id="icon-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+  </symbol>
+  <symbol id="icon-auth" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+  </symbol>
+  <symbol id="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+  </symbol>
+  <symbol id="icon-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="20 6 9 17 4 12"/>
+  </symbol>
+  <symbol id="icon-delete" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+  </symbol>
+  <symbol id="icon-add" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/>
+  </symbol>
+  <symbol id="icon-edit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+  </symbol>
+  <symbol id="icon-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+  </symbol>
+  <symbol id="icon-export" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+  </symbol>
+  <symbol id="icon-import" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+  </symbol>
+  <symbol id="icon-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+  </symbol>
+  <symbol id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+  </symbol>
+  <symbol id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+  </symbol>
+  <symbol id="icon-storage" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+  </symbol>
+  <symbol id="icon-custom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+  </symbol>
+</svg>
+
+<header id="app-header">
+  <div class="header-logo">
+    <svg class="icon" style="stroke:var(--accent)"><use href="#icon-contact"/></svg>
+    <span>CLIPBOARD</span>
+  </div>
+  <div class="header-search-wrap">
+    <svg class="icon icon-sm" style="stroke:var(--text2)"><use href="#icon-search"/></svg>
+    <input id="search-input" type="text" placeholder="Search...">
+    <button id="search-clear" style="display:none">×</button>
+  </div>
+  <div class="header-actions">
+    <button class="btn-icon" id="theme-toggle" title="Toggle theme">
+      <svg class="icon"><use href="#icon-moon"/></svg>
+    </button>
+    <button class="btn-secondary" id="export-btn">
+      <svg class="icon icon-sm"><use href="#icon-export"/></svg> Export
+    </button>
+    <label class="btn-secondary" style="cursor:pointer">
+      <svg class="icon icon-sm"><use href="#icon-import"/></svg> Import
+      <input type="file" id="import-input" accept=".json" hidden>
+    </label>
+    <button class="btn-primary" id="edit-toggle">
+      <svg class="icon icon-sm"><use href="#icon-edit"/></svg>
+      <span id="edit-label">Edit</span>
+    </button>
+    <span id="editing-badge" hidden>Editing</span>
+  </div>
+</header>
+
+<div id="card-grid">
+  <div class="card" id="card-contact">
+    <div class="card-header">
+      <div class="card-title">
+        <svg class="icon icon-sm" style="stroke:var(--accent)"><use href="#icon-contact"/></svg>
+        Contact &amp; Links
+      </div>
+      <button class="btn-copy" onclick="copyAll('contact')">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg> All
+      </button>
+    </div>
+    <div class="card-body" id="body-contact"></div>
+  </div>
+  <div class="card" id="card-files">
+    <div class="card-header">
+      <div class="card-title">
+        <svg class="icon icon-sm" style="stroke:var(--accent)"><use href="#icon-files"/></svg>
+        Files
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <svg class="icon icon-xs" style="stroke:var(--text2)"><use href="#icon-storage"/></svg>
+        <span id="storage-mb" style="font-size:9px;color:var(--text2)">0MB / 5MB</span>
+      </div>
+    </div>
+    <div class="card-body" id="body-files"></div>
+  </div>
+  <div class="card" id="card-skills">
+    <div class="card-header">
+      <div class="card-title">
+        <svg class="icon icon-sm" style="stroke:var(--accent)"><use href="#icon-skills"/></svg>
+        Skills
+      </div>
+      <button class="btn-copy" onclick="copyAll('skills')">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg> All
+      </button>
+    </div>
+    <div class="card-body" id="body-skills"></div>
+  </div>
+  <div class="card" id="card-qa">
+    <div class="card-header">
+      <div class="card-title">
+        <svg class="icon icon-sm" style="stroke:var(--accent)"><use href="#icon-qa"/></svg>
+        Q&amp;A / HR Info
+      </div>
+      <button class="btn-copy" onclick="copyAll('qa')">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg> All
+      </button>
+    </div>
+    <div class="card-body" id="body-qa"></div>
+  </div>
+  <div class="card" id="card-projects">
+    <div class="card-header">
+      <div class="card-title">
+        <svg class="icon icon-sm" style="stroke:var(--accent)"><use href="#icon-projects"/></svg>
+        Projects
+      </div>
+      <button class="btn-copy" onclick="copyAll('projects')">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg> All
+      </button>
+    </div>
+    <div class="card-body" id="body-projects"></div>
+  </div>
+  <div class="card" id="card-education">
+    <div class="card-header">
+      <div class="card-title">
+        <svg class="icon icon-sm" style="stroke:var(--accent)"><use href="#icon-education"/></svg>
+        Education
+      </div>
+      <button class="btn-copy" onclick="copyAll('education')">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg> All
+      </button>
+    </div>
+    <div class="card-body" id="body-education"></div>
+  </div>
+  <div class="card" id="card-work">
+    <div class="card-header">
+      <div class="card-title">
+        <svg class="icon icon-sm" style="stroke:var(--accent)"><use href="#icon-work"/></svg>
+        Work Experience
+      </div>
+      <button class="btn-copy" onclick="copyAll('work')">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg> All
+      </button>
+    </div>
+    <div class="card-body" id="body-work"></div>
+  </div>
+  <div class="card" id="card-pitch">
+    <div class="card-header">
+      <div class="card-title">
+        <svg class="icon icon-sm" style="stroke:var(--accent)"><use href="#icon-pitch"/></svg>
+        Pitch
+      </div>
+      <button class="btn-copy" onclick="copyAll('pitch')">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg> All
+      </button>
+    </div>
+    <div class="card-body" id="body-pitch"></div>
+  </div>
+  <div class="card" id="card-notes">
+    <div class="card-header">
+      <div class="card-title">
+        <svg class="icon icon-sm" style="stroke:var(--accent)"><use href="#icon-notes"/></svg>
+        Notes
+      </div>
+      <button class="btn-copy" onclick="copyAll('notes')">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg> All
+      </button>
+    </div>
+    <div class="card-body" id="body-notes"></div>
+  </div>
+
+</div>
+
+<div id="toast"></div>
+
+<script>
+const STORAGE_KEY = 'jobclipboard_v10';
+
+function deepClone(o) { return JSON.parse(JSON.stringify(o)); }
+
+const defaultData = {
+  contact: { resumeLink:'', name:'', phone:'', email:'', location:'', linkedin:'', github:'', portfolio:'', custom:[] },
+  education: [{ degree:'', institution:'', location:'', dateRange:'', custom:[] }],
+  work: [{ company:'', title:'', dateRange:'', location:'', workMode:'', description:'', custom:[] }],
+  skills: { value:'', custom:[] },
+  projects: [{ name:'', description:'', techStack:'', custom:[] }],
+  qa: { currentCtc:'', expectedCtc:'', noticePeriod:'', joiningDate:'', totalExp:'', relevantExp:'', relocation:'', remoteMode:'', workAuth:'', reasonForChange:'', custom:[] },
+  pitch: { aboutYourself:'', coverLetter:'', custom:[] },
+  notes: { value:'', custom:[] },
+  files: []
+};
+
+const entryDefaults = {
+  education: { degree:'', institution:'', location:'', dateRange:'', custom:[] },
+  work: { company:'', title:'', dateRange:'', location:'', workMode:'', description:'', custom:[] },
+  projects: { name:'', description:'', techStack:'', custom:[] }
+};
+
+let appData = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') || deepClone(defaultData);
+let editMode = false;
+let saveTimer = null;
+let toastTimer = null;
+
+// ── HELPERS ──────────────────────────────────────────────────────────────────
+
+function esc(s) {
+  return (s || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function fieldRow(icon, label, type, val, section, key, entryIdx) {
+  const setter = entryIdx !== undefined
+    ? `setEntryVal('${section}',${entryIdx},'${key}',this.value)`
+    : `setVal('${section}','${key}',this.value)`;
+  const getter = entryIdx !== undefined
+    ? `appData.${section}[${entryIdx}].${key}`
+    : `appData.${section}.${key}`;
+  return `<div class="field-row">
+    <label class="field-label"><svg class="icon icon-xs"><use href="#icon-${icon}"/></svg>${label}</label>
+    <div class="field-value">
+      <input class="field-input" type="${type}" value="${esc(val)}" placeholder="${label}" oninput="${setter}">
+      <button class="btn-copy" onclick="copyVal(${getter},this)">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg>
+      </button>
+    </div>
+  </div>`;
+}
+
+function nameRow(val) {
+  return `<div class="field-row">
+    <label class="field-label"><svg class="icon icon-xs"><use href="#icon-name"/></svg>Full Name</label>
+    <div class="field-value">
+      <input class="field-input" type="text" value="${esc(val)}" placeholder="First Last" oninput="setVal('contact','name',this.value)">
+      <button class="btn-copy btn-sm" onclick="copyNamePart('first',this)">1st</button>
+      <button class="btn-copy btn-sm" onclick="copyNamePart('last',this)">Last</button>
+      <button class="btn-copy" onclick="copyVal(appData.contact.name,this)">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg>
+      </button>
+    </div>
+  </div>`;
+}
+
+function dateRangeRow(val, section, idx) {
+  return `<div class="field-row">
+    <label class="field-label"><svg class="icon icon-xs"><use href="#icon-date"/></svg>Date Range</label>
+    <div class="field-value">
+      <input class="field-input" type="text" value="${esc(val)}" placeholder="2020 – 2024" oninput="setEntryVal('${section}',${idx},'dateRange',this.value)">
+      <button class="btn-copy btn-sm" onclick="copyDatePart('start','${section}',${idx},this)">Start</button>
+      <button class="btn-copy btn-sm" onclick="copyDatePart('end','${section}',${idx},this)">End</button>
+    </div>
+  </div>`;
+}
+
+function textareaRow(icon, label, val, section, key, entryIdx) {
+  const setter = entryIdx !== undefined
+    ? `setEntryVal('${section}',${entryIdx},'${key}',this.value)`
+    : `setVal('${section}','${key}',this.value)`;
+  const getter = entryIdx !== undefined
+    ? `appData.${section}[${entryIdx}].${key}`
+    : `appData.${section}.${key}`;
+  return `<div class="field-row" style="flex-direction:column;align-items:stretch;gap:6px">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <label class="field-label" style="width:auto"><svg class="icon icon-xs"><use href="#icon-${icon}"/></svg>${label}</label>
+      <button class="btn-copy" onclick="copyVal(${getter},this)">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg>
+      </button>
+    </div>
+    <textarea class="field-input" placeholder="${label}" oninput="${setter}">${esc(val)}</textarea>
+  </div>`;
+}
+
+function customFieldsHtml(section, entryIdx, customs) {
+  return (customs || []).map((cf, ci) => {
+    const valGetter = entryIdx !== null && entryIdx !== undefined
+      ? `appData.${section}[${entryIdx}].custom[${ci}].value`
+      : `appData.${section}.custom[${ci}].value`;
+    const eidStr = (entryIdx !== null && entryIdx !== undefined) ? entryIdx : 'null';
+    return `<div class="custom-field-row">
+      <svg class="icon icon-xs" style="stroke:var(--accent)"><use href="#icon-custom"/></svg>
+      <input class="custom-label-input" value="${esc(cf.label)}" placeholder="Label" oninput="setCustomVal('${section}',${ci},'label',this.value,${eidStr})">
+      <input class="field-input" style="flex:1;pointer-events:auto" value="${esc(cf.value)}" placeholder="Value" oninput="setCustomVal('${section}',${ci},'value',this.value,${eidStr})">
+      <button class="btn-copy" onclick="copyVal(${valGetter},this)">
+        <svg class="icon icon-xs"><use href="#icon-copy"/></svg>
+      </button>
+      <button class="btn-copy btn-danger btn-delete-custom" onclick="deleteCustomField('${section}',${ci},${eidStr})">
+        <svg class="icon icon-xs"><use href="#icon-delete"/></svg>
+      </button>
+    </div>`;
+  }).join('');
+}
+
+function bindFieldInputs(container) {
+  container.querySelectorAll('.field-input').forEach(el => { el.disabled = !editMode; });
+  container.querySelectorAll('.custom-label-input').forEach(el => { el.disabled = !editMode; });
+}
+
+// ── RENDER FUNCTIONS ─────────────────────────────────────────────────────────
+
+function renderContact() {
+  const body = document.getElementById('body-contact');
+  const d = appData.contact;
+  body.innerHTML = `
+    ${fieldRow('icon-resume','Resume Link','text',d.resumeLink,'contact','resumeLink')}
+    ${nameRow(d.name)}
+    ${fieldRow('icon-phone','Phone','text',d.phone,'contact','phone')}
+    ${fieldRow('icon-email','Email','email',d.email,'contact','email')}
+    ${fieldRow('icon-location','Location','text',d.location,'contact','location')}
+    ${fieldRow('icon-linkedin','LinkedIn','url',d.linkedin,'contact','linkedin')}
+    ${fieldRow('icon-github','GitHub','url',d.github,'contact','github')}
+    ${fieldRow('icon-portfolio','Portfolio','url',d.portfolio,'contact','portfolio')}
+    ${customFieldsHtml('contact', null, d.custom)}
+    <button class="btn-copy btn-add-custom" onclick="addCustomField('contact')">
+      <svg class="icon icon-xs"><use href="#icon-add"/></svg> Add Field
+    </button>
+  `;
+  bindFieldInputs(body);
+}
+
+function renderEducation() {
+  const body = document.getElementById('body-education');
+  const entries = appData.education;
+  let html = '';
+  entries.forEach((e, idx) => {
+    html += `<div class="entry-card">
+      <div class="entry-card-header">
+        <span class="entry-label">Education ${entries.length > 1 ? idx + 1 : ''}</span>
+        <button class="btn-copy btn-danger btn-delete-entry" onclick="deleteEntry('education',${idx})">
+          <svg class="icon icon-xs"><use href="#icon-delete"/></svg>
+        </button>
+      </div>
+      ${fieldRow('education','Degree','text',e.degree,'education','degree',idx)}
+      ${fieldRow('portfolio','Institution','text',e.institution,'education','institution',idx)}
+      ${fieldRow('icon-location','Location','text',e.location,'education','location',idx)}
+      ${dateRangeRow(e.dateRange,'education',idx)}
+      ${customFieldsHtml('education', idx, e.custom)}
+      <button class="btn-copy btn-add-custom" onclick="addCustomField('education',${idx})">
+        <svg class="icon icon-xs"><use href="#icon-add"/></svg> Add Field
+      </button>
+    </div>`;
+  });
+  html += `<button class="btn-copy btn-add-entry" onclick="addEntry('education')">
+    <svg class="icon icon-xs"><use href="#icon-add"/></svg> Add Education
+  </button>`;
+  body.innerHTML = html;
+  bindFieldInputs(body);
+}
+
+function renderWork() {
+  const body = document.getElementById('body-work');
+  const entries = appData.work;
+  let html = '';
+  entries.forEach((e, idx) => {
+    html += `<div class="entry-card">
+      <div class="entry-card-header">
+        <span class="entry-label">Job ${entries.length > 1 ? idx + 1 : ''}</span>
+        <button class="btn-copy btn-danger btn-delete-entry" onclick="deleteEntry('work',${idx})">
+          <svg class="icon icon-xs"><use href="#icon-delete"/></svg>
+        </button>
+      </div>
+      ${fieldRow('icon-work','Company','text',e.company,'work','company',idx)}
+      ${fieldRow('icon-name','Title','text',e.title,'work','title',idx)}
+      ${dateRangeRow(e.dateRange,'work',idx)}
+      ${fieldRow('icon-location','Location','text',e.location,'work','location',idx)}
+      ${fieldRow('icon-globe','Work Mode','text',e.workMode,'work','workMode',idx)}
+      ${textareaRow('icon-notes','Description',e.description,'work','description',idx)}
+      ${customFieldsHtml('work', idx, e.custom)}
+      <button class="btn-copy btn-add-custom" onclick="addCustomField('work',${idx})">
+        <svg class="icon icon-xs"><use href="#icon-add"/></svg> Add Field
+      </button>
+    </div>`;
+  });
+  html += `<button class="btn-copy btn-add-entry" onclick="addEntry('work')">
+    <svg class="icon icon-xs"><use href="#icon-add"/></svg> Add Job
+  </button>`;
+  body.innerHTML = html;
+  bindFieldInputs(body);
+}
+
+function renderSkills() {
+  const body = document.getElementById('body-skills');
+  const d = appData.skills;
+  body.innerHTML = `
+    ${textareaRow('icon-skills','Skills (comma-separated or free text)',d.value,'skills','value')}
+    ${customFieldsHtml('skills', null, d.custom)}
+    <button class="btn-copy btn-add-custom" onclick="addCustomField('skills')">
+      <svg class="icon icon-xs"><use href="#icon-add"/></svg> Add Field
+    </button>
+  `;
+  bindFieldInputs(body);
+}
+
+function renderProjects() {
+  const body = document.getElementById('body-projects');
+  const entries = appData.projects;
+  let html = '';
+  entries.forEach((e, idx) => {
+    html += `<div class="entry-card">
+      <div class="entry-card-header">
+        <span class="entry-label">Project ${entries.length > 1 ? idx + 1 : ''}</span>
+        <button class="btn-copy btn-danger btn-delete-entry" onclick="deleteEntry('projects',${idx})">
+          <svg class="icon icon-xs"><use href="#icon-delete"/></svg>
+        </button>
+      </div>
+      ${fieldRow('icon-projects','Project Name','text',e.name,'projects','name',idx)}
+      ${textareaRow('icon-notes','Description',e.description,'projects','description',idx)}
+      ${fieldRow('icon-skills','Tech Stack','text',e.techStack,'projects','techStack',idx)}
+      ${customFieldsHtml('projects', idx, e.custom)}
+      <button class="btn-copy btn-add-custom" onclick="addCustomField('projects',${idx})">
+        <svg class="icon icon-xs"><use href="#icon-add"/></svg> Add Field
+      </button>
+    </div>`;
+  });
+  html += `<button class="btn-copy btn-add-entry" onclick="addEntry('projects')">
+    <svg class="icon icon-xs"><use href="#icon-add"/></svg> Add Project
+  </button>`;
+  body.innerHTML = html;
+  bindFieldInputs(body);
+}
+
+function renderQA() {
+  const body = document.getElementById('body-qa');
+  const d = appData.qa;
+  body.innerHTML = `
+    ${fieldRow('icon-ctc','Current CTC','text',d.currentCtc,'qa','currentCtc')}
+    ${fieldRow('icon-ctc','Expected CTC','text',d.expectedCtc,'qa','expectedCtc')}
+    ${fieldRow('icon-clock','Notice Period','text',d.noticePeriod,'qa','noticePeriod')}
+    ${fieldRow('icon-date','Joining Date','text',d.joiningDate,'qa','joiningDate')}
+    ${fieldRow('icon-clock','Total Exp','text',d.totalExp,'qa','totalExp')}
+    ${fieldRow('icon-clock','Relevant Exp','text',d.relevantExp,'qa','relevantExp')}
+    ${fieldRow('icon-globe','Relocation','text',d.relocation,'qa','relocation')}
+    ${fieldRow('icon-globe','Remote Mode','text',d.remoteMode,'qa','remoteMode')}
+    ${fieldRow('icon-auth','Work Auth','text',d.workAuth,'qa','workAuth')}
+    ${textareaRow('icon-qa','Reason for Change',d.reasonForChange,'qa','reasonForChange')}
+    ${customFieldsHtml('qa', null, d.custom)}
+    <button class="btn-copy btn-add-custom" onclick="addCustomField('qa')">
+      <svg class="icon icon-xs"><use href="#icon-add"/></svg> Add Field
+    </button>
+  `;
+  bindFieldInputs(body);
+}
+
+function renderPitch() {
+  const body = document.getElementById('body-pitch');
+  const d = appData.pitch;
+  body.innerHTML = `
+    ${textareaRow('icon-pitch','About Yourself',d.aboutYourself,'pitch','aboutYourself')}
+    ${textareaRow('icon-notes','Cover Letter',d.coverLetter,'pitch','coverLetter')}
+    ${customFieldsHtml('pitch', null, d.custom)}
+    <button class="btn-copy btn-add-custom" onclick="addCustomField('pitch')">
+      <svg class="icon icon-xs"><use href="#icon-add"/></svg> Add Field
+    </button>
+  `;
+  bindFieldInputs(body);
+}
+
+function renderNotes() {
+  const body = document.getElementById('body-notes');
+  const d = appData.notes;
+  body.innerHTML = `
+    ${textareaRow('icon-notes','Notes',d.value,'notes','value')}
+    ${customFieldsHtml('notes', null, d.custom)}
+    <button class="btn-copy btn-add-custom" onclick="addCustomField('notes')">
+      <svg class="icon icon-xs"><use href="#icon-add"/></svg> Add Field
+    </button>
+  `;
+  bindFieldInputs(body);
+}
+
+function renderFiles() {
+  const body = document.getElementById('body-files');
+  let html = `<div class="drop-zone" id="drop-zone">
+    <svg class="icon" style="margin-bottom:6px;stroke:var(--text2)"><use href="#icon-files"/></svg><br>
+    Drop files here or click to upload
+  </div>`;
+  appData.files.forEach((f, idx) => {
+    const kb = (f.size / 1024).toFixed(1);
+    html += `<div class="file-item">
+      <svg class="icon icon-sm" style="stroke:var(--accent);flex-shrink:0"><use href="#icon-files"/></svg>
+      <div class="file-info">
+        <div class="file-name">${esc(f.name)}</div>
+        <div class="file-meta">${kb} KB · ${esc(f.date)}</div>
+      </div>
+      <button class="btn-copy" onclick="downloadFile(${idx})">
+        <svg class="icon icon-xs"><use href="#icon-export"/></svg>
+      </button>
+      <button class="btn-copy btn-danger btn-delete-entry" onclick="deleteFile(${idx})">
+        <svg class="icon icon-xs"><use href="#icon-delete"/></svg>
+      </button>
+    </div>`;
+  });
+  html += `<div class="storage-bar-wrap">
+    <div class="storage-bar-label">
+      <span><svg class="icon icon-xs" style="stroke:var(--text2)"><use href="#icon-storage"/></svg> Storage</span>
+      <span id="storage-mb">0MB / 5MB</span>
+    </div>
+    <div class="storage-bar"><div class="storage-bar-fill" id="storage-fill" style="width:0%"></div></div>
+  </div>`;
+  body.innerHTML = html;
+  bindFileZone();
+  applyEditMode();
+  updateStorageMeter();
+}
+
+function renderAll() {
+  renderContact(); renderFiles(); renderSkills(); renderQA(); renderProjects(); renderEducation(); renderWork(); renderPitch(); renderNotes();
+  applyEditMode();
+}
+
+function renderSection(id) {
+  const map = {
+    contact: renderContact, education: renderEducation, work: renderWork,
+    skills: renderSkills, projects: renderProjects, qa: renderQA,
+    pitch: renderPitch, notes: renderNotes, files: renderFiles
+  };
+  if (map[id]) map[id]();
+  applyEditMode();
+}
+
+// ── DATA SETTERS ─────────────────────────────────────────────────────────────
+
+function setVal(section, key, val) { appData[section][key] = val; save(); }
+function setEntryVal(section, idx, key, val) { appData[section][idx][key] = val; save(); }
+function setCustomVal(section, cidx, key, val, entryIdx) {
+  if (entryIdx !== null && entryIdx !== undefined) appData[section][entryIdx].custom[cidx][key] = val;
+  else appData[section].custom[cidx][key] = val;
+  save();
+}
+
+// ── SAVE ─────────────────────────────────────────────────────────────────────
+
+function save() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(appData));
+    showToast('Saved ✓');
+    updateStorageMeter();
+  }, 300);
+}
+
+// ── COPY ─────────────────────────────────────────────────────────────────────
+
+function copyVal(text, btn) {
+  text = (text == null ? '' : String(text));
+  const p = navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject();
+  p.catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+  });
+  flashCopy(btn);
+}
+
+function flashCopy(btn) {
+  btn.classList.add('copied');
+  const use = btn.querySelector('use');
+  const orig = use ? use.getAttribute('href') : null;
+  if (use) use.setAttribute('href','#icon-check');
+  setTimeout(() => {
+    btn.classList.remove('copied');
+    if (use && orig) use.setAttribute('href', orig);
+  }, 1500);
+}
+
+function copyNamePart(part, btn) {
+  const n = (appData.contact.name || '').trim().split(/\s+/);
+  copyVal(part === 'first' ? (n[0] || '') : (n[n.length - 1] || ''), btn);
+}
+
+function copyDatePart(part, section, idx, btn) {
+  const raw = (Array.isArray(appData[section]) ? appData[section][idx] : appData[section]).dateRange || '';
+  const sep = raw.includes('–') ? '–' : raw.includes('-') ? '-' : '/';
+  const parts = raw.split(sep).map(s => s.trim());
+  copyVal(part === 'start' ? (parts[0] || raw) : (parts[1] || raw), btn);
+}
+
+function copyAll(section) {
+  let lines = [];
+  const d = appData[section];
+  if (section === 'contact') {
+    if (d.name) lines.push('Name: ' + d.name);
+    if (d.phone) lines.push('Phone: ' + d.phone);
+    if (d.email) lines.push('Email: ' + d.email);
+    if (d.location) lines.push('Location: ' + d.location);
+    if (d.linkedin) lines.push('LinkedIn: ' + d.linkedin);
+    if (d.github) lines.push('GitHub: ' + d.github);
+    if (d.portfolio) lines.push('Portfolio: ' + d.portfolio);
+    if (d.resumeLink) lines.push('Resume: ' + d.resumeLink);
+    (d.custom || []).forEach(c => { if (c.value) lines.push(c.label + ': ' + c.value); });
+  } else if (section === 'skills') {
+    if (d.value) lines.push(d.value);
+    (d.custom || []).forEach(c => { if (c.value) lines.push(c.label + ': ' + c.value); });
+  } else if (section === 'qa') {
+    const qMap = { currentCtc:'Current CTC', expectedCtc:'Expected CTC', noticePeriod:'Notice Period', joiningDate:'Joining Date', totalExp:'Total Exp', relevantExp:'Relevant Exp', relocation:'Relocation', remoteMode:'Remote Mode', workAuth:'Work Auth', reasonForChange:'Reason for Change' };
+    Object.entries(qMap).forEach(([k, label]) => { if (d[k]) lines.push(label + ': ' + d[k]); });
+    (d.custom || []).forEach(c => { if (c.value) lines.push(c.label + ': ' + c.value); });
+  } else if (section === 'pitch') {
+    if (d.aboutYourself) lines.push('About:\n' + d.aboutYourself);
+    if (d.coverLetter) lines.push('Cover Letter:\n' + d.coverLetter);
+    (d.custom || []).forEach(c => { if (c.value) lines.push(c.label + ': ' + c.value); });
+  } else if (section === 'notes') {
+    if (d.value) lines.push(d.value);
+    (d.custom || []).forEach(c => { if (c.value) lines.push(c.label + ': ' + c.value); });
+  } else if (Array.isArray(d)) {
+    d.forEach((entry, i) => {
+      if (d.length > 1) lines.push('--- ' + (i + 1) + ' ---');
+      Object.entries(entry).forEach(([k, v]) => {
+        if (k === 'custom') {
+          (v || []).forEach(c => { if (c.value) lines.push(c.label + ': ' + c.value); });
+        } else if (v) {
+          lines.push(k + ': ' + v);
+        }
+      });
+    });
+  }
+  const btn = event && event.currentTarget ? event.currentTarget : document.querySelector('#card-' + section + ' .btn-copy');
+  navigator.clipboard.writeText(lines.join('\n')).catch(() => {});
+  showToast('Copied!');
+}
+
+// ── EDIT MODE ─────────────────────────────────────────────────────────────────
+
+function toggleEdit() {
+  editMode = !editMode;
+  document.body.classList.toggle('edit-mode', editMode);
+  document.getElementById('editing-badge').hidden = !editMode;
+  const lbl = document.getElementById('edit-label');
+  const use = document.getElementById('edit-toggle').querySelector('use');
+  lbl.textContent = editMode ? 'Done' : 'Edit';
+  use.setAttribute('href', editMode ? '#icon-save' : '#icon-edit');
+  applyEditMode();
+}
+
+function applyEditMode() {
+  document.querySelectorAll('.field-input').forEach(el => { el.disabled = !editMode; });
+  document.querySelectorAll('.custom-label-input').forEach(el => { el.disabled = !editMode; });
+  document.querySelectorAll('.btn-add-entry, .btn-add-custom').forEach(el => {
+    el.style.display = editMode ? 'inline-flex' : 'none';
+  });
+  document.querySelectorAll('.btn-delete-entry, .btn-delete-custom').forEach(el => {
+    el.style.display = editMode ? 'inline-flex' : 'none';
+  });
+}
+
+// ── THEME ─────────────────────────────────────────────────────────────────────
+
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : '');
+  localStorage.setItem('jc_theme', t);
+  const use = document.getElementById('theme-toggle').querySelector('use');
+  use.setAttribute('href', t === 'light' ? '#icon-moon' : '#icon-sun');
+}
+
+function toggleTheme() {
+  applyTheme(document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light');
+}
+
+// ── EXPORT / IMPORT ───────────────────────────────────────────────────────────
+
+function exportData() {
+  const b = new Blob([JSON.stringify(appData, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(b); a.download = 'job-clipboard.json'; a.click();
+}
+
+function importData(file) {
+  if (!file) return;
+  const r = new FileReader();
+  r.onload = e => {
+    try { appData = JSON.parse(e.target.result); save(); renderAll(); showToast('Imported ✓'); }
+    catch { showToast('Import failed'); }
+  };
+  r.readAsText(file);
+}
+
+// ── TOAST ─────────────────────────────────────────────────────────────────────
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2000);
+}
+
+// ── ENTRIES ───────────────────────────────────────────────────────────────────
+
+function addEntry(section) {
+  appData[section].push(deepClone(entryDefaults[section]));
+  save(); renderSection(section);
+}
+
+function deleteEntry(section, idx) {
+  if (!confirm('Delete this entry?')) return;
+  appData[section].splice(idx, 1); save(); renderSection(section);
+}
+
+// ── CUSTOM FIELDS ─────────────────────────────────────────────────────────────
+
+function addCustomField(section, entryIdx) {
+  const field = { label: 'Custom', value: '' };
+  if (entryIdx !== undefined && entryIdx !== null) appData[section][entryIdx].custom.push(field);
+  else appData[section].custom.push(field);
+  save(); renderSection(section);
+}
+
+function deleteCustomField(section, cidx, entryIdx) {
+  if (!confirm('Delete field?')) return;
+  if (entryIdx !== null && entryIdx !== undefined) appData[section][entryIdx].custom.splice(cidx, 1);
+  else appData[section].custom.splice(cidx, 1);
+  save(); renderSection(section);
+}
+
+// ── FILES ─────────────────────────────────────────────────────────────────────
+
+function bindFileZone() {
+  const z = document.getElementById('drop-zone');
+  if (!z) return;
+  z.addEventListener('dragover', e => { e.preventDefault(); z.classList.add('drag-over'); });
+  z.addEventListener('dragleave', () => z.classList.remove('drag-over'));
+  z.addEventListener('drop', e => { e.preventDefault(); z.classList.remove('drag-over'); [...e.dataTransfer.files].forEach(readFile); });
+  z.addEventListener('click', () => {
+    const i = document.createElement('input'); i.type = 'file'; i.multiple = true;
+    i.onchange = e => [...e.target.files].forEach(readFile); i.click();
+  });
+}
+
+function readFile(file) {
+  const r = new FileReader();
+  r.onload = e => {
+    appData.files.push({ name: file.name, size: file.size, date: new Date().toLocaleDateString(), data: e.target.result });
+    save(); renderFiles();
+  };
+  r.readAsDataURL(file);
+}
+
+function downloadFile(idx) {
+  const f = appData.files[idx];
+  const a = document.createElement('a'); a.href = f.data; a.download = f.name; a.click();
+}
+
+function deleteFile(idx) {
+  if (!confirm(`Delete "${appData.files[idx].name}"?`)) return;
+  appData.files.splice(idx, 1); save(); renderFiles();
+}
+
+function updateStorageMeter() {
+  let tot = 0;
+  try {
+    for (let k in localStorage) {
+      if (Object.prototype.hasOwnProperty.call(localStorage, k)) tot += localStorage[k].length * 2;
+    }
+  } catch (e) {}
+  const mb = tot / 1048576, pct = Math.min(100, mb / 5 * 100);
+  const fill = document.getElementById('storage-fill');
+  const lbl = document.getElementById('storage-mb');
+  if (fill) { fill.style.width = pct + '%'; fill.classList.toggle('warn', pct > 80); }
+  if (lbl) lbl.textContent = mb.toFixed(2) + 'MB / 5MB';
+}
+
+// ── SEARCH ────────────────────────────────────────────────────────────────────
+
+function onSearch(q) {
+  const cards = document.querySelectorAll('.card');
+  if (!q.trim()) {
+    cards.forEach(c => { c.style.opacity = ''; c.style.boxShadow = ''; });
+    return;
+  }
+  cards.forEach(card => {
+    const matches = card.textContent.toLowerCase().includes(q.toLowerCase());
+    card.style.opacity = matches ? '1' : '0.2';
+    card.style.boxShadow = matches ? '0 0 0 1px var(--accent)' : '';
+  });
+}
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+
+window.addEventListener('DOMContentLoaded', () => {
+  const savedTheme = localStorage.getItem('jc_theme') ||
+    (window.matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light');
+  applyTheme(savedTheme);
+  renderAll();
+
+  document.getElementById('edit-toggle').addEventListener('click', toggleEdit);
+  document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+  document.getElementById('export-btn').addEventListener('click', exportData);
+  document.getElementById('import-input').addEventListener('change', e => importData(e.target.files[0]));
+  document.getElementById('search-input').addEventListener('input', e => {
+    const q = e.target.value;
+    document.getElementById('search-clear').style.display = q ? 'block' : 'none';
+    onSearch(q);
+  });
+  document.getElementById('search-clear').addEventListener('click', () => {
+    document.getElementById('search-input').value = '';
+    onSearch('');
+    document.getElementById('search-clear').style.display = 'none';
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === '/' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
+      e.preventDefault(); document.getElementById('search-input').focus();
+    }
+    if (e.key === 'Escape') {
+      document.getElementById('search-input').value = ''; onSearch('');
+      document.getElementById('search-clear').style.display = 'none';
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'e') { e.preventDefault(); toggleEdit(); }
+  });
+});
+
+// ── STAGGER ANIMATION ─────────────────────────────────────────────────────────
+
+window.addEventListener('load', () => {
+  document.querySelectorAll('.card').forEach((card, i) => {
+    card.style.opacity = '0';
+    card.style.transform = 'translateY(8px)';
+    card.style.transition = `opacity 0.3s ease ${i * 40}ms, transform 0.3s ease ${i * 40}ms`;
+    setTimeout(() => { card.style.opacity = '1'; card.style.transform = 'translateY(0)'; }, 50);
+  });
+  updateStorageMeter();
+});
+</script>
+</body>
+</html>
