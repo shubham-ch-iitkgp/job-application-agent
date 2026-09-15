@@ -39,10 +39,19 @@ def slug(text: str) -> str:
 
 
 def parse_date(value: str) -> dt.date | None:
-    try:
-        return dt.date.fromisoformat(value)
-    except ValueError:
-        return None
+    """Accept a bare date ('2026-09-10') or a 'date time' timestamp
+    ('2026-09-10 14:32:05') — applied.csv's first column carries the latter."""
+    value = (value or "").strip()
+    for parse in (
+        lambda v: dt.date.fromisoformat(v),
+        lambda v: dt.datetime.fromisoformat(v).date(),
+        lambda v: dt.datetime.strptime(v, "%Y-%m-%d %H:%M:%S").date(),
+    ):
+        try:
+            return parse(value)
+        except ValueError:
+            continue
+    return None
 
 
 def read_records(path: str) -> list[dict]:
