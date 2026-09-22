@@ -51,6 +51,37 @@
     return el;
   }
 
+  const SKILLS_BOX_ID = "__agent_skills_box";
+
+  function makeSkillsBox(host) {
+    if (typeof window.__agentCaptureJD !== "function") return; // manual mode only
+    if (document.getElementById(SKILLS_BOX_ID)) return;
+    const el = document.createElement("textarea");
+    el.id = SKILLS_BOX_ID;
+    el.readOnly = true;
+    el.placeholder = "Tech skills mentioned in the JD will appear here after "
+      + "'Capture job description'";
+    Object.assign(el.style, {
+      pointerEvents: "auto",
+      width: "260px", height: "90px", resize: "vertical",
+      padding: "8px 10px", font: "500 12px/1.4 system-ui, -apple-system, sans-serif",
+      color: "#1a1a1a", background: "#fff", border: "1px solid " + GREEN,
+      borderRadius: "8px", boxShadow: "0 2px 8px rgba(0,0,0,.35)",
+    });
+    host.appendChild(el);
+    // the page (and this box) may be a fresh document after a navigation —
+    // refill from Python's per-tab copy so the list survives until re-captured
+    if (typeof window.__agentGetSkills === "function") {
+      window.__agentGetSkills().then(setSkills).catch(() => {});
+    }
+  }
+
+  function setSkills(list) {
+    const el = document.getElementById(SKILLS_BOX_ID);
+    if (!el) return;
+    el.value = Array.isArray(list) ? list.join(", ") : (list || "");
+  }
+
   function make(spec, host) {
     if (typeof window[spec.fn] !== "function") return;   // Python handler not bound
     if (document.getElementById(spec.id)) return;        // already on the page
@@ -79,6 +110,7 @@
       if (spec.id === "__agent_jd_btn" && ok) {
         // leave a visible "done" state so the user knows the JD was collected;
         // restore after a few seconds so a new page can be re-captured
+        if (ret) setSkills(ret);
         b.textContent = "✓ JD captured";
         b.style.background = "#57606a";
         setTimeout(() => {
@@ -112,6 +144,7 @@
     const host = bar();
     if (!host) return;                                   // DOM not ready — retried below
     BTNS.forEach((spec) => make(spec, host));
+    makeSkillsBox(host);
     if (!window.__agentObserving && document.documentElement) {
       window.__agentObserving = true;
       try {

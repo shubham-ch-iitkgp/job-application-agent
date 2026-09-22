@@ -29,6 +29,24 @@ import time
 import traceback
 import unicodedata
 
+
+def _load_env_file(path: str) -> None:
+    """Load KEY=VALUE lines from .env into os.environ (never overriding vars
+    already set), so a bare `python main.py` works the same as ./apply.sh."""
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+    except OSError:
+        pass
+
+
+_load_env_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
 import yaml
 from openai import OpenAI
 from playwright.async_api import async_playwright
@@ -96,6 +114,27 @@ def pick_resume(profile: dict, text: str) -> str:
     return best_path or p.get("resume_path", "")
 
 
+# Query-param names (case-insensitive) that are pure tracking/referral noise
+# on generic ATS/career sites, never part of a job's identity. Everything NOT
+# in this list is kept in job_key()'s dedupe key by default, so an unrecognized
+# identifying param (e.g. a company's own "posting_id") still keeps two
+# distinct postings distinct instead of silently merging them. Derived by
+# auditing every param name actually seen in data/jobs.txt: each entry here
+# was confirmed to hold a constant/channel value (LinkedIn tag, feed batch id,
+# referrer id, company domain echo, etc.) while the real job identity lived
+# in the URL path or another param.
+TRACKING_PARAM_DENYLIST = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "source", "sourceid", "src", "domain", "ref", "refid", "referrer",
+    "feedid", "applicationsource", "iis", "iisn", "gh_src", "pid",
+    "fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "li_fat_id",
+}
+# Recruitics' redirect-tracking macros (rx_ch, rx_id, rx_job, rx_ts, ...) all
+# share this prefix; seen on jobs.thermofisher.com where the job requisition
+# id is already in the path, so the whole rx_* family is redundant noise.
+TRACKING_PARAM_PREFIXES = ("rx_",)
+
+
 def job_key(url: str) -> str:
     """Canonical identity for a job so the same posting under different URLs
     (company site with ?gh_jid=, greenhouse embed, board URL) dedupes to one.
@@ -105,7 +144,13 @@ def job_key(url: str) -> str:
     parsed = urllib.parse.urlparse(url)
     host = parsed.hostname or ""
     qs = urllib.parse.parse_qs(parsed.query)
-    gh_id = (qs.get("gh_jid") or qs.get("token") or [None])[0]
+    fragment = f"#{parsed.fragment}" if parsed.fragment else ""
+    gh_id = (qs.get("gh_jid") or [None])[0]
+    if not gh_id and "greenhouse" in host:
+        # "token" is only trustworthy as a greenhouse id when we're actually on
+        # a greenhouse host - other ATSes (e.g. ripplehire) use "token" for an
+        # unrelated session id and put the real job id elsewhere (a fragment).
+        gh_id = (qs.get("token") or [None])[0]
     if not gh_id and "greenhouse" in host:
         m = re.search(r"/jobs/(\d+)", parsed.path)
         gh_id = m.group(1) if m else None
@@ -124,7 +169,14 @@ def job_key(url: str) -> str:
     parts = [p for p in parsed.path.split("/") if p]
     if "ashbyhq" in host or "lever.co" in host:
         return f"{host}:{'/'.join(parts[:2])}"
-    return f"{host}{parsed.path}".rstrip("/")
+    def is_tracking_param(name: str) -> bool:
+        name = name.lower()
+        return name in TRACKING_PARAM_DENYLIST or name.startswith(TRACKING_PARAM_PREFIXES)
+    kept = {k: v[0] for k, v in qs.items() if not is_tracking_param(k)}
+    if kept:
+        q_str = "&".join(f"{k}={v}" for k, v in sorted(kept.items()))
+        return f"{host}{parsed.path}?{q_str}{fragment}".rstrip("/")
+    return f"{host}{parsed.path}{fragment}".rstrip("/")
 
 
 def company_from_url(url: str) -> str:
@@ -377,16 +429,21 @@ async def page_main_text(page) -> tuple[str, str]:
         except Exception:
             return ""
 
-    best, best_url = await _txt(page.main_frame), page.url
-    if len(best) >= 800:
-        return best, best_url
+    main_txt = await _txt(page.main_frame)
+    best_url, best_len = page.url, len(main_txt)
+    parts = []
     for frame in page.frames:
         if frame is page.main_frame:
             continue
         t = await _txt(frame)
-        if len(t) > len(best):
-            best, best_url = t, frame.url
-    return best, best_url
+        if len(t) < 200 or t in main_txt:
+            continue
+        parts.append(t)
+        if len(t) > best_len:
+            best_url, best_len = frame.url, len(t)
+    # Child-frame text first: on career sites with a big shell (nav, testimonials)
+    # the posting itself lives in an iframe and must not fall past the LLM cutoff.
+    return "\n\n".join(parts + [main_txt]).strip(), best_url
 
 
 def plan_answers(fields: list[dict], profile: dict, job_url: str,
@@ -455,6 +512,40 @@ Return ONLY JSON: {{"<idx>": {{"value": "...", "source": "profile|generated|skip
     log.event("plan_response", page_url=job_url, raw=_clip(content),
               finish_reason=finish, parsed_ok=True, plan=_clip(plan))
     return plan
+
+
+def extract_tech_skills(jd_text: str, log=_NULL_LOG) -> list[str]:
+    """Ask the LLM for the technical skills/tools/languages/frameworks named in
+    a job posting, for the read-only tech-skills box next to the in-page
+    buttons (manual mode) — a copy-paste source for ATS "skills" fields."""
+    prompt = f"""Extract the technical skills, tools, languages, frameworks, and
+platforms explicitly mentioned in this job posting. Do not include soft skills
+or non-technical requirements. Order by how prominent/frequent each is in the
+posting.
+
+JOB POSTING:
+{jd_text[:12000]}
+
+Return ONLY JSON: {{"skills": ["...", "..."]}}"""
+    try:
+        resp = get_llm().chat.completions.create(
+            model=LLM_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            **llm_extra_kwargs(),
+        )
+        content = (resp.choices[0].message.content or "").strip()
+        if content.startswith("```"):
+            content = content.strip("`").removeprefix("json").strip()
+        data = json.loads(content)
+        skills = data.get("skills") if isinstance(data, dict) else data
+        skills = [str(s).strip() for s in skills if str(s).strip()] \
+            if isinstance(skills, list) else []
+        log.event("tech_skills_extract", chars=len(jd_text), skills=skills)
+        return skills
+    except Exception as e:
+        log.event("tech_skills_extract_error", error=str(e))
+        return []
 
 
 def normalize_plan(plan, fields: list[dict]) -> dict:
@@ -778,7 +869,7 @@ async def looks_like_login(page) -> bool:
 def _new_state() -> dict:
     return {"jd_text": None, "tailored_resume": None, "cover_path": None,
             "tailored_done": False, "failed": False, "overwrite": False,
-            "fill_task": None, "log": _NULL_LOG}
+            "fill_task": None, "log": _NULL_LOG, "tech_skills": []}
 
 
 def _log_field_outcome(log, page_url, field, ans, outcome, cur=""):
@@ -1056,14 +1147,14 @@ async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
     async def capture_jd():
         if jd_lock.locked():
             print("  (JD capture already running — ignored)")
-            return
+            return state["tech_skills"]
         async with jd_lock:
             text, src = await page_main_text(page)
             if text == state["jd_text"]:
                 print(f"  JD unchanged ({len(text)} chars) — already captured, skipping")
                 state["log"].event("jd_capture", page_url=page.url, chars=len(text),
                                    source_frame=src, unchanged=True, replaced=False)
-                return
+                return state["tech_skills"]
             replaced = bool(state["jd_text"])
             if replaced:
                 print("  (replacing the previously captured JD with this page's)")
@@ -1077,6 +1168,11 @@ async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
             state["log"].event("jd_capture", page_url=page.url, chars=len(text),
                                source_frame=src, path=path, unchanged=False,
                                replaced=replaced)
+            skills = extract_tech_skills(text, state["log"])
+            if skills:  # a failed/empty extraction keeps the previous list
+                state["tech_skills"] = skills
+                print(f"  tech skills: {', '.join(skills)}")
+            return state["tech_skills"]
 
     async def fill_now(overwrite: bool = False):
         if lock.locked():
@@ -1123,6 +1219,11 @@ async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
               "  failed mark cleared — closing the tab will log this run as 'reviewed'")
         return state["failed"]
 
+    async def get_skills():
+        """Lets the in-page skills box refill itself after a navigation."""
+        return state["tech_skills"]
+
+    await page.expose_function("__agentGetSkills", get_skills)
     await page.expose_function("__agentCaptureJD", capture_jd)
     await page.expose_function("__agentFill", fill_now)
     await page.expose_function("__agentFillOverwrite", fill_overwrite)
@@ -1324,5 +1425,8 @@ if __name__ == "__main__":
             sys.exit(1)
         print(f"  queue      : {DEFAULT_QUEUE}")
         urls = read_queue(DEFAULT_QUEUE)
+    if not (os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY")):
+        print("  no LLM key found — set LLM_API_KEY in .env (see .env.example)")
+        sys.exit(1)
     cfg = load_config(cli)
     asyncio.run(main(urls, cfg))
