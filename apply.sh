@@ -8,7 +8,7 @@
 #
 # Any arguments you pass are forwarded verbatim to main.py, so every main.py
 # flag works here too (--manual / -m, --auto, --no-tailor, --force, --queue,
-# --parallel / -p).
+# --parallel / -p, --env / -e).
 #
 # Usage:
 #   ./apply.sh <job_url> [<job_url> ...]   apply to one or more jobs
@@ -19,6 +19,8 @@
 #   ./apply.sh --parallel 5               keep 5 applications open at once; close any
 #     (or -p 5)                            tab and the next queued job opens in its
 #                                          place. Manual mode under -p is buttons-only.
+#   ./apply.sh --env local <job_url>      read local.yaml for defaults (same as APP_ENV=local);
+#     (or -e local)                        CLI flags still override it
 #   ./apply.sh --auto <job_url>            force auto-fill even if local.yaml says manual
 #   ./apply.sh --no-tailor <job_url>       upload the master CV as-is (skip tailoring)
 #   ./apply.sh --force <job_url>           re-apply even if the URL is already in applied.csv
@@ -28,12 +30,12 @@
 # Always single-quote the URL — job URLs contain & and ? which the shell would
 # otherwise interpret:  ./apply.sh 'https://site/apply?a=1&b=2'
 #
-# Prefix with APP_ENV=local to also read local.yaml, e.g.:
+# Equivalent: prefix with APP_ENV=local, e.g.:
 #   APP_ENV=local ./apply.sh --manual 'https://acme.wd5.myworkdayjobs.com/...'
 
 usage() {
   # print the header comment block above (strip the leading "# ")
-  sed -n '3,31p' "$0" | sed 's/^#\{1,\} \{0,1\}//; s/^#$//'
+  sed -n '3,34p' "$0" | sed 's/^#\{1,\} \{0,1\}//; s/^#$//'
 }
 
 # --help / -h anywhere on the command line

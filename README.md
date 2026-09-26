@@ -47,8 +47,8 @@ export LLM_API_KEY=...         # + optional LLM_BASE_URL / LLM_MODEL / LLM_REASO
 
 ```bash
 python main.py https://boards.greenhouse.io/acme/jobs/12345
-python main.py --queue jobs.txt    # one URL per line
-python main.py --queue jobs.txt --parallel 5   # 5 applications open at once (see below)
+python main.py --queue data/jobs.txt    # one URL per line
+python main.py --queue data/jobs.txt --parallel 5   # 5 applications open at once (see below)
 python main.py --manual <url>      # multi-page / login-walled forms (see below)
 ./apply.sh                          # full pipeline via launcher script
 ```

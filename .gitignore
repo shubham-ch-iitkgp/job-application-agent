@@ -19,6 +19,9 @@ jobs.txt
 *.log
 logs/
 
+# Claude session analysis output — periodic analyses, logs, findings
+claude/
+
 # macOS
 .DS_Store
 
