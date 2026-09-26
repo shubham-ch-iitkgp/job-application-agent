@@ -306,10 +306,36 @@ def record_applied(url: str, status: str = "reviewed"):
         f.write(f"{ts},{company},{url},{status}\n")
 
 
+# Folded (lowercased, non-alphanumerics stripped — see _fold()) text of a
+# dropdown's own instructional copy: "Select One", "-- Please Select --",
+# "Choose an option", etc. Widget libraries across ATSes (Workday's combobox
+# buttons, native <select>s, React custom dropdowns) commonly mirror this
+# placeholder as the control's accessible name/current-value text, which is
+# indistinguishable by source (aria-label, innerText, ...) from a real label
+# or a real selected answer unless the *content* is checked against this
+# list. Shared by the label-extraction scan (_FIELD_SCAN_JS, so a generic
+# candidate is skipped in favor of the next source) and by
+# field_current_value (so a still-generic combobox reads as empty rather
+# than "already answered"), instead of each keeping its own copy that could
+# drift out of sync. Deliberately an exact-match denylist rather than a
+# prefix/substring rule: a prefix rule like folded.startswith("select") would
+# also reject real questions that happen to start with "Select" (e.g.
+# "Select your preferred contact method").
+GENERIC_DROPDOWN_TEXT = frozenset({
+    "selectone", "selectonerequired", "select", "selectrequired",
+    "selectoption", "selectanoption", "selectavalue",
+    "pleaseselect", "pleaseselectanoption",
+    "pleasechoose", "pleasechooseanoption",
+    "choose", "chooseanoption", "chooseone", "chooseoption",
+    "none", "noneselected", "na",
+})
+
+
 # Runs inside a single frame's document. Pulled out as a constant so
 # extract_form_fields can run it against every frame on the page.
 _FIELD_SCAN_JS = r"""
 () => {
+const GENERIC_DROPDOWN_TEXT = new Set(__GENERIC_DROPDOWN_TEXT_JSON__);
 // Framer / Tally / Typeform-style forms render the label as a plain
 // <div> or <label>-without-for sitting above the input, so el.labels /
 // aria-* / placeholder are all empty. Walk up a few ancestors and take
@@ -353,20 +379,36 @@ return deep(document, [])
         return true;
     })
     .map((el, idx) => {
-        let label = '';
-        if (el.labels && el.labels.length) label = el.labels[0].innerText;
-        if (!label && el.getAttribute('aria-label')) label = el.getAttribute('aria-label');
-        if (!label && el.placeholder) label = el.placeholder;
-        if (!label && el.getAttribute('aria-labelledby')) {
+        // Collect every candidate in priority order first, then pick the
+        // earliest one that isn't just the widget's own placeholder copy
+        // ("Select One", "Please Select", ...) — see GENERIC_DROPDOWN_TEXT
+        // in Python for why a content check beats stopping at the first
+        // non-empty source. A custom Workday/MUI/react-select trigger often
+        // reports its OWN current-value/placeholder text as aria-label or
+        // innerText, which would otherwise win over the real question sitting
+        // in a sibling <label> a couple of DOM steps further down this list.
+        const candidates = [];
+        if (el.labels && el.labels.length) candidates.push(el.labels[0].innerText);
+        if (el.getAttribute('aria-label')) candidates.push(el.getAttribute('aria-label'));
+        if (el.placeholder) candidates.push(el.placeholder);
+        if (el.getAttribute('aria-labelledby')) {
             const ref = document.getElementById(el.getAttribute('aria-labelledby'));
-            if (ref) label = ref.innerText;
+            if (ref) candidates.push(ref.innerText);
         }
-        if (!label) label = labelByProximity(el);
-        if (!label) {
+        candidates.push(labelByProximity(el));
+        {
             const wrap = el.closest('div,fieldset');
             const lab = wrap && wrap.querySelector('label');
-            if (lab) label = lab.innerText;
+            if (lab) candidates.push(lab.innerText);
         }
+        const fold = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+        const isGeneric = (s) => GENERIC_DROPDOWN_TEXT.has(fold(s));
+        let label = candidates.find(c => c && c.trim() && !isGeneric(c))
+            // nothing usable anywhere — fall back to the first non-empty
+            // candidate (generic or not) so the field still reaches the LLM
+            // with SOME text rather than none at all.
+            || candidates.find(c => c && c.trim())
+            || '';
         label = (label || '')
             .replace(/\s*\*\s*$/, '')
             .replace(/\s*\(required\)\s*$/i, '')
@@ -394,7 +436,7 @@ return deep(document, [])
         };
     });
 }
-"""
+""".replace("__GENERIC_DROPDOWN_TEXT_JSON__", json.dumps(sorted(GENERIC_DROPDOWN_TEXT)))
 
 
 async def extract_form_fields(page):
@@ -761,9 +803,9 @@ async def field_current_value(page, field: dict) -> str:
             txt = raw.splitlines()[0].strip() if raw else ""
             # a combobox showing only its placeholder ("Select One", "Please
             # Select", "Choose...") holds no real answer — treat it as empty so
-            # the fill isn't skipped as already_filled.
-            if _fold(txt) in ("selectone", "pleaseselect", "select",
-                              "selectanoption", "choose", "none", "selectavalue"):
+            # the fill isn't skipped as already_filled. Shared denylist with
+            # _FIELD_SCAN_JS's label extraction — see GENERIC_DROPDOWN_TEXT.
+            if _fold(txt) in GENERIC_DROPDOWN_TEXT:
                 return ""
             return txt
     except Exception:
@@ -1411,6 +1453,14 @@ if __name__ == "__main__":
             except (IndexError, ValueError):
                 print("  --parallel needs an integer, e.g. --parallel 5")
                 sys.exit(1)
+            del args[i:i + 2]
+    for opt in ("--env", "-e"):
+        while opt in args:
+            i = args.index(opt)
+            if i + 1 >= len(args) or args[i + 1] != "local":
+                print("  --env/-e needs a value; only 'local' is supported, e.g. --env local")
+                sys.exit(1)
+            os.environ["APP_ENV"] = "local"    # same effect as APP_ENV=local
             del args[i:i + 2]
     if not sys.argv[1:]:                       # bare `python main.py` → usage
         print(__doc__)
