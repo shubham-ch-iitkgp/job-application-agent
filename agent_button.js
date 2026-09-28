@@ -82,6 +82,94 @@
     el.value = Array.isArray(list) ? list.join(", ") : (list || "");
   }
 
+  const ASK_WRAP_ID = "__agent_ask_wrap";
+
+  function makeAskBox(host) {
+    if (typeof window.__agentAskAI !== "function") return; // manual mode only
+    if (document.getElementById(ASK_WRAP_ID)) return;
+    const wrap = document.createElement("div");
+    wrap.id = ASK_WRAP_ID;
+    Object.assign(wrap.style, {
+      pointerEvents: "auto",
+      display: "flex", flexDirection: "column", gap: "4px",
+      width: "260px", padding: "8px", background: "#fff",
+      border: "1px solid " + GREEN, borderRadius: "8px",
+      boxShadow: "0 2px 8px rgba(0,0,0,.35)",
+    });
+
+    const input = document.createElement("textarea");
+    input.placeholder = "Paste a tricky question here, then Ask AI";
+    Object.assign(input.style, {
+      width: "100%", height: "60px", resize: "vertical", boxSizing: "border-box",
+      padding: "6px 8px", font: "500 12px/1.4 system-ui, -apple-system, sans-serif",
+      color: "#1a1a1a", background: "#f6f8fa", border: "1px solid #d0d7de",
+      borderRadius: "6px", outline: "none",
+    });
+
+    const askBtn = document.createElement("button");
+    askBtn.type = "button";
+    askBtn.textContent = "🧠 Ask AI";
+    Object.assign(askBtn.style, {
+      padding: "6px 10px", font: "600 12px/1.2 system-ui, -apple-system, sans-serif",
+      color: "#fff", background: GREEN, border: "none", borderRadius: "6px",
+      cursor: "pointer",
+    });
+
+    const output = document.createElement("textarea");
+    output.readOnly = true;
+    output.placeholder = "The answer will appear here";
+    Object.assign(output.style, {
+      width: "100%", height: "80px", resize: "vertical", boxSizing: "border-box",
+      padding: "6px 8px", font: "500 12px/1.4 system-ui, -apple-system, sans-serif",
+      color: "#1a1a1a", background: "#f6f8fa", border: "1px solid #d0d7de",
+      borderRadius: "6px", outline: "none",
+    });
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.textContent = "📋 Copy";
+    Object.assign(copyBtn.style, {
+      padding: "6px 10px", font: "600 12px/1.2 system-ui, -apple-system, sans-serif",
+      color: GREEN, background: "#fff", border: "1px solid " + GREEN,
+      borderRadius: "6px", cursor: "pointer", alignSelf: "flex-start",
+    });
+
+    askBtn.addEventListener("click", async () => {
+      const q = input.value.trim();
+      if (!q || askBtn.disabled) return;
+      askBtn.disabled = true;
+      const label = askBtn.textContent;
+      askBtn.textContent = "… asking";
+      askBtn.style.opacity = "0.6";
+      try {
+        output.value = await window.__agentAskAI(q);
+      } catch (e) {
+        output.value = "⚠ " + (e && e.message ? e.message : "ask failed");
+        console.error("[agent]", e);
+      } finally {
+        askBtn.textContent = label;
+        askBtn.style.opacity = "1";
+        askBtn.disabled = false;
+      }
+    });
+
+    copyBtn.addEventListener("click", async () => {
+      if (!output.value) return;
+      try {
+        await navigator.clipboard.writeText(output.value);
+        const label = copyBtn.textContent;
+        copyBtn.textContent = "✓ Copied";
+        setTimeout(() => { copyBtn.textContent = label; }, 1500);
+      } catch (e) { console.error("[agent]", e); }
+    });
+
+    wrap.appendChild(input);
+    wrap.appendChild(askBtn);
+    wrap.appendChild(output);
+    wrap.appendChild(copyBtn);
+    host.appendChild(wrap);
+  }
+
   function make(spec, host) {
     if (typeof window[spec.fn] !== "function") return;   // Python handler not bound
     if (document.getElementById(spec.id)) return;        // already on the page
@@ -145,6 +233,7 @@
     if (!host) return;                                   // DOM not ready — retried below
     BTNS.forEach((spec) => make(spec, host));
     makeSkillsBox(host);
+    makeAskBox(host);
     if (!window.__agentObserving && document.documentElement) {
       window.__agentObserving = true;
       try {

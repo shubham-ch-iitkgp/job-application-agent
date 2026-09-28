@@ -1265,12 +1265,56 @@ async def run_manual(pw, page, url: str, profile: dict, cfg: dict):
         """Lets the in-page skills box refill itself after a navigation."""
         return state["tech_skills"]
 
+    async def ask_ai(question: str) -> str:
+        """In-page 'Ask AI' box: answers a free-form question (usually a
+        screening question the automated scan couldn't fill) using the same
+        LLM client/key and the same job/profile context as the automated
+        plan, so the operator doesn't have to alt-tab to a separate chat."""
+        question = (question or "").strip()
+        if not question:
+            return ""
+        state["log"].event("ask_ai_request", page_url=page.url, model=LLM_MODEL,
+                           question=_clip(question))
+        prompt = f"""You help an applicant answer a job-application question.
+
+APPLICANT PROFILE (authoritative — never invent facts not present here):
+{yaml.safe_dump(profile)}
+
+JOB URL: {url}
+
+JOB DESCRIPTION (may be empty if not captured yet):
+{(state.get("jd_text") or "")[:12000]}
+
+QUESTION (verbatim from the application form):
+{question}
+
+Answer directly and concisely, ready to paste into the form field as-is —
+no preamble, no markdown, no quotes around it. Use profile facts verbatim
+where relevant; for open-ended questions, answer in the applicant's voice
+per voice_notes. Never fabricate experience or facts not in the profile."""
+        try:
+            resp = await asyncio.to_thread(
+                lambda: get_llm().chat.completions.create(
+                    model=LLM_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    **llm_extra_kwargs(),
+                )
+            )
+            answer = (resp.choices[0].message.content or "").strip()
+            state["log"].event("ask_ai_response", page_url=page.url,
+                               answer=_clip(answer))
+            return answer
+        except Exception as e:
+            state["log"].event("ask_ai_error", page_url=page.url, error=str(e))
+            return f"⚠ error: {e}"
+
     await page.expose_function("__agentGetSkills", get_skills)
     await page.expose_function("__agentCaptureJD", capture_jd)
     await page.expose_function("__agentFill", fill_now)
     await page.expose_function("__agentFillOverwrite", fill_overwrite)
     await page.expose_function("__agentAbortFill", abort_fill)
     await page.expose_function("__agentMarkFailed", mark_failed)
+    await page.expose_function("__agentAskAI", ask_ai)
     js = open(os.path.join(ROOT_DIR, "agent_button.js")).read()
     await page.add_init_script(js)      # runs on every future navigation
     try:

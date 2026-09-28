@@ -459,14 +459,137 @@ const STORAGE_KEY = 'jobclipboard_v10';
 function deepClone(o) { return JSON.parse(JSON.stringify(o)); }
 
 const defaultData = {
-  contact: { resumeLink:'', name:'', phone:'', email:'', location:'', linkedin:'', github:'', portfolio:'', custom:[] },
-  education: [{ degree:'', institution:'', location:'', dateRange:'', custom:[] }],
-  work: [{ company:'', title:'', dateRange:'', location:'', workMode:'', description:'', custom:[] }],
-  skills: { value:'', custom:[] },
-  projects: [{ name:'', description:'', techStack:'', custom:[] }],
-  qa: { currentCtc:'', expectedCtc:'', noticePeriod:'', joiningDate:'', totalExp:'', relevantExp:'', relocation:'', remoteMode:'', workAuth:'', reasonForChange:'', custom:[] },
-  pitch: { aboutYourself:'', coverLetter:'', custom:[] },
-  notes: { value:'', custom:[] },
+  contact: {
+    resumeLink: "https://drive.google.com/file/d/1c2yimdHQ7TJz1MraQmLUsgmUZ5WZFwYX/view?usp=sharing",
+    name: "Shubham Chaurasiya",
+    phone: "+91 7413851480",
+    email: "shubh.ch.iitkgp@gmail.com",
+    location: "Bengaluru, India",
+    linkedin: "https://www.linkedin.com/in/shubham7413/",
+    github: "",
+    portfolio: "",
+    custom: [
+      { label: "Current Title", value: "Senior Engineer, DevSecOps @ Midships.io" },
+      { label: "Address", value: "Channasandra, Bengaluru, Karnataka, 560067, India" },
+      { label: "ATS Account Password", value: "sB@670tn#a" }
+    ]
+  },
+  education: [
+    {
+      degree: "Integrated B.Tech & M.Tech (Bachelor of Technology & Master of Technology)",
+      institution: "Indian Institute of Technology Kharagpur",
+      location: "India",
+      dateRange: "2020 – 2025",
+      custom: [
+        { label: "GPA", value: "7.71/10.0" },
+        { label: "Certification", value: "Certified Professional – PingOne Advanced Identity Cloud (Ping Identity, Mar 2026)" }
+      ]
+    }
+  ],
+  work: [
+    {
+      company: "Midships.io",
+      title: "Senior Engineer, DevSecOps",
+      dateRange: "Jun 2025 – Present",
+      location: "Remote",
+      workMode: "Remote",
+      description: "• Built a company-wide Leave Management System (React.js, Node.js, REST APIs, Tailwind CSS): role-based access (employee/manager/admin), leave tracking across 7+ location-aware holiday-calendar regions, manager approval workflows.\n• Delivered React.js Operator UI screens for a Hong Kong enterprise client (record management, multi-device account linking, biometric security controls) and job-based server-side PDF/Excel report generation turning 50,000+ activity records into reports up to 500 pages via PrimeReact.\n• Architected a Python configuration-management tool that auto-splits 3,000+ line IAM JSON exports into 200+ version-controlled per-object files, with merge logic to reconstruct hierarchical JSON on import, validated byte-for-byte.\n• Engineered client-side concurrency guards for WebAuthn/passkey flows in React, normalizing duplicate browser-API calls into controlled errors across 6 browser/platform combinations.\n• Automated Bash operations for an enterprise IAM platform's Admin REST API: 12 import + 3 export operations with dependency-ordered execution and auth/realm-access checks, run across 10+ realm configurations with zero manual intervention.\n• Scaled K6 performance testing across 40+ interdependent APIs for a large enterprise banking client; tuned 20+ Grafana dashboard panels for client-specific SLA monitoring.\n• Engineered GitLab CI / GitHub Actions pipelines routing 10-15 Ping Identity binaries and custom node builds through an internal Artifactory repo, removing public-registry access to cut supply-chain risk.\n• Contributed to a UK bank's Ping Identity IAM implementation, building 6+ authentication journey configurations including standard login and step-up flows.\n• Migrated secrets from hardcoded Kubernetes secrets to Azure Key Vault, syncing credentials at runtime before service init.\n• Implemented GitOps continuous deployment with ArgoCD, cutting manual release effort by ~50%.\n• Led a full frontend refactor of the Midships corporate website (Wix), contributing to a 25% increase in organic search impressions post-launch.",
+      custom: []
+    },
+    {
+      company: "PanScience Innovations (PSI)",
+      title: "Software Development Engineer Intern",
+      dateRange: "Jan 2025 – Apr 2025",
+      location: "New Delhi",
+      workMode: "",
+      description: "• Built a full-stack video content-moderation platform (React.js + Flask + REST APIs) covering upload through classification results.\n• Architected an automated moderation pipeline using OpenCV for frame extraction and AWS Rekognition for ML classification, timestamping sensitive content across 5+ categories at 90% flagging accuracy — cut manual review from 30 min to 5 min per video.\n• Designed a sequential video-processing queue in Python for controlled one-at-a-time resource use, plus scripts to dedupe/merge overlapping classification intervals into analysis-ready CSV datasets.",
+      custom: []
+    },
+    {
+      company: "Skylark Labs",
+      title: "Full Stack Development Intern",
+      dateRange: "May 2024 – Jul 2024",
+      location: "Pune",
+      workMode: "",
+      description: "• Consumed ML-powered accident-hotspot prediction APIs via a Django REST Framework backend (MySQL / Django ORM), visualizing 40+ hotspot zones with custom React Google Maps markers.\n• Implemented JWT auth with refresh-token/expiry handling and httpOnly cookie storage; integrated a WebSocket library to stream real-time location-based accident alerts onto a live map.\n• Improved user engagement by 25% and reduced page load times by 15% via a React + Material UI interface redesign.",
+      custom: []
+    }
+  ],
+  skills: {
+    value: "Kubernetes, Docker, AWS, GCP, GitLab CI, GitHub Actions, ArgoCD, Grafana, Prometheus, K6, Ping Identity, Azure Key Vault, WebAuthn/Passkeys, Artifactory, Linux, Bash, Python, Node.js, REST APIs, JWT, WebSocket, SQL, Flask, Django REST Framework, MySQL, JavaScript, TypeScript, React.js, Tailwind CSS, Material UI, PrimeReact, ElectronJS",
+    custom: []
+  },
+  projects: [
+    {
+      name: "Leave Management System",
+      description: "Company-wide leave management system built in a 4-engineer team: role-based access (employee/manager/admin), leave tracking across 7+ location-aware holiday-calendar regions, and manager approval workflows.",
+      techStack: "React.js, Node.js, REST APIs, Tailwind CSS",
+      custom: []
+    },
+    {
+      name: "IAM Configuration Management Tool",
+      description: "Python tool that auto-splits unmanageable 3,000+ line IAM JSON exports into 200+ version-controlled per-object files, with merge logic to reconstruct hierarchical JSON on import — validated byte-for-byte.",
+      techStack: "Python",
+      custom: []
+    },
+    {
+      name: "K6 Performance Testing & Observability Suite",
+      description: "Built a K6 performance-testing suite on GCP (Docker-orchestrated infra) for an enterprise IAM platform; traced a pod load-imbalance issue to instance-type selection and improved throughput from 700 to 1,100 RPS. Scaled coverage across 40+ interdependent APIs and tuned 20+ Grafana dashboard panels for client-specific SLA monitoring.",
+      techStack: "K6, Grafana, Prometheus, Docker, GCP",
+      custom: []
+    },
+    {
+      name: "Video Content Moderation Platform",
+      description: "Full-stack video content-moderation platform covering upload through classification results. Automated pipeline using OpenCV for frame extraction and AWS Rekognition for ML classification, flagging sensitive content across 5+ categories at 90% accuracy and cutting manual review time from 30 minutes to 5.",
+      techStack: "React.js, Flask, OpenCV, AWS Rekognition, Python",
+      custom: []
+    },
+    {
+      name: "Accident Hotspot Prediction Platform",
+      description: "ML-powered accident-hotspot system with a Django REST Framework backend (MySQL/Django ORM) and a React frontend visualizing 40+ hotspot zones on Google Maps. JWT auth with refresh tokens and httpOnly cookies, plus a WebSocket feed for real-time accident alerts.",
+      techStack: "Django REST Framework, MySQL, React.js, JWT, WebSocket",
+      custom: []
+    },
+    {
+      name: "Drone Controller — Inter IIT Tech Meet 11.0",
+      description: "8-member team project, 1st Prize / Gold at Inter IIT Tech Meet 11.0 (IIT Kanpur). Python-based drone controller with a desktop bridge app in ElectronJS + Flask showing live drone metrics (pitch, roll, throttle, yaw) via Axios and Chart.js.",
+      techStack: "Python, ElectronJS, Flask, Axios, Chart.js",
+      custom: []
+    }
+  ],
+  qa: {
+    currentCtc: "22 LPA",
+    expectedCtc: "30 LPA",
+    noticePeriod: "2 months (However, I'm available to start immediately as soon as start of next week)",
+    joiningDate: "Immediately",
+    totalExp: "1.5 years",
+    relevantExp: "1.5 years",
+    relocation: "Yes — open to relocating, and also happy to work fully remote",
+    remoteMode: "Open to remote, hybrid, or onsite",
+    workAuth: "If this role is based in India: I am authorized to work in India and need NO visa or sponsorship. If this role is based outside India (US, UK, EU, etc.): I would require work authorization and visa sponsorship for that country.",
+    reasonForChange: "",
+    custom: [
+      { label: "Salutation", value: "Mr." },
+      { label: "Gender", value: "Male" },
+      { label: "Pronouns", value: "he/him" },
+      { label: "Date of Birth", value: "10 Jan 2003" },
+      { label: "Desired Salary", value: "30 LPA" },
+      { label: "Requires Visa Sponsorship", value: "No for roles located in India. Yes for roles located outside India." },
+      { label: "How Did You Hear About Us", value: "Company careers site / website, else LinkedIn" },
+      { label: "EEO - Race/Ethnicity", value: "Asian" },
+      { label: "EEO - Hispanic/Latino", value: "No" },
+      { label: "EEO - Veteran Status", value: "I am not a protected veteran" }
+    ]
+  },
+  pitch: {
+    aboutYourself: "Software engineer building full-stack systems across React.js, Node.js, and Python — from frontend to deployment. At Midships.io I've shipped a company-wide Leave Management System, automated reporting pipelines processing 50,000+ records, and a version-controlled configuration manager for IAM platform exports. IIT Kharagpur graduate (Integrated B.Tech & M.Tech), comfortable across the stack — frontend, backend, and the deploy pipeline. I like making systems work with no clean spec, which is most of what forward-deployment work actually is. Happy to walk through any of it — it's all on my resume.",
+    coverLetter: "What I'd bring is a habit of making systems work with no clean spec, which is most of what forward deployment actually is. In the past year I've shipped features to banking clients in Hong Kong, the Philippines, and the UK. I'm an IIT Kharagpur graduate with a strong systems foundation, and everything below was learned on the job.\n\n• Designed and built a config manager used across multiple enterprise clients, reverse engineering a 30-50 endpoint undocumented API to do it with zero data loss\n• Took a client's throughput from 700 to 1,100 RPS by tracing a live bottleneck\n• Shipped full-stack POCs end to end (React, Flask, Django)\n• Python and containers on GCP/Azure, daily\n\nHappy to walk through any of this, it's all on my resume.",
+    custom: []
+  },
+  notes: {
+    value: "Resume variants: resume_a (full-stack, Shubham_Resume_Midships.pdf) and resume_b (DevSecOps, Shubham_Resume_IITKGP.pdf) — picked automatically by keyword match against the job posting.\n\nVoice/tone for cover letters: direct, builder-first, lead with concrete outcomes over adjectives, mention IIT Kharagpur and cross-geography enterprise clients (Hong Kong, Philippines, UK) as credibility, close low-key (\"happy to walk through any of this\").",
+    custom: []
+  },
   files: []
 };
 
